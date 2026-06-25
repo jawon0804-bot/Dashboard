@@ -25,34 +25,18 @@ admin.initializeApp({
 const db = admin.firestore();
 
 // ---------------------------------------------------------------------------
-// 센터(현장) -> 엑셀 보고서 컬렉션 매핑
-// 키는 UserDB의 "center" 필드 값과 정확히 일치해야 합니다 (대소문자/공백까지 동일해야 함).
-// 현재는 "쿠팡울산2Sub-Hub" 센터만 운영 중이며, 다른 센터가 추가되면
-// 이 매핑에 한 줄만 추가하면 됩니다. (예: "쿠팡부산1Sub-Hub": "MaxerveBusan_Excel")
-// 매핑에 없는 센터로 로그인하면 엑셀 데이터 없이 빈 목록으로 처리됩니다(에러 아님).
+// 엑셀 보고서 단일 컬렉션
+// 센터별로 별도 컬렉션을 쓰던 방식(MaxerveUlsan_Excel 등)에서
+// Maxerve_Excel 하나로 통합하고 centerName 필드로 필터링합니다.
+// 신규 센터 추가 시 코드 수정/재배포 없이 Firestore에 문서만 넣으면 됩니다.
 // ---------------------------------------------------------------------------
-const EXCEL_COLLECTION_BY_CENTER = {
-  "쿠팡울산2Sub-Hub": "MaxerveUlsan_Excel",
-};
+const EXCEL_COLLECTION = "Maxerve_Excel";
 
 // "Master" 센터로 로그인하면 모든 센터의 데이터를 통합해서 봅니다.
 const MASTER_CENTER_NAME = "Master";
 
 // inspection_logs(점검기록)는 최근 60일치만 조회합니다. (엑셀 보고서는 전체 유지)
 const INSPECTION_LOGS_LOOKBACK_DAYS = 60;
-
-function getExcelCollectionName(center) {
-  return EXCEL_COLLECTION_BY_CENTER[center] || null;
-}
-
-// Master면 등록된 모든 센터의 엑셀 컬렉션명을, 일반 센터면 해당 센터 컬렉션명 1개를 배열로 반환
-function getExcelCollectionNames(center) {
-  if (center === MASTER_CENTER_NAME) {
-    return Object.values(EXCEL_COLLECTION_BY_CENTER);
-  }
-  const name = getExcelCollectionName(center);
-  return name ? [name] : [];
-}
 
 function getLookbackDateString(days) {
   const d = new Date();
@@ -83,62 +67,55 @@ function extractCleanFileName(url, uploadedAt) {
 }
 
 // ---------------------------------------------------------------------------
-// 센터(또는 Master)에 해당하는 엑셀 컬렉션들을 모두 읽어
+// 센터(또는 Master)에 해당하는 엑셀 데이터를 Maxerve_Excel 단일 컬렉션에서 조회해
 // { excelMap, excelListByFid } 형태로 가공해 반환하는 공통 함수.
+// Master면 centerName 필터 없이 전체 조회, 일반 센터면 centerName으로 필터링.
 // /api/dashboard와 /api/excel-files(캐시 미스 시) 양쪽에서 재사용합니다.
 // ---------------------------------------------------------------------------
 async function buildExcelData(center) {
-  const excelCollectionNames = getExcelCollectionNames(center);
-
-  // 엑셀 DB -> 설비ID:링크 매핑 (정렬 후 첫 번째 설비ID에만 링크) — 기존 화면 호환용
   const excelMap = {};
-  // 엑셀 DB -> 설비ID별 "전체" 보고서 목록 (신규: 팝업 페이지네이션에서 사용)
   const excelListByFid = {};
 
-  if (excelCollectionNames.length === 0) {
-    return { excelMap, excelListByFid };
-  }
+  const isMaster = center === MASTER_CENTER_NAME;
 
-  const excelSnaps = await Promise.all(excelCollectionNames.map((name) => db.collection(name).get()));
+  // Master는 전체 조회, 일반 센터는 centerName 필터링
+  const excelQuery = isMaster
+    ? db.collection(EXCEL_COLLECTION)
+    : db.collection(EXCEL_COLLECTION).where("centerName", "==", center);
 
-  excelSnaps.forEach((excelSnap) => {
-    excelSnap.forEach((doc) => {
-      const data = doc.data();
-      if (!data.facilityId || !data.file_url) return;
+  const excelSnap = await excelQuery.get();
 
-      let fidList = [];
-      if (Array.isArray(data.facilityId)) {
-        fidList = data.facilityId;
-      } else if (typeof data.facilityId === "string") {
-        fidList = data.facilityId.split(",").map((s) => s.trim());
-      } else {
-        fidList = [String(data.facilityId)];
-      }
-      fidList.sort((a, b) => a.localeCompare(b));
+  excelSnap.forEach((doc) => {
+    const data = doc.data();
+    if (!data.facilityId || !data.file_url) return;
 
-      // 정렬 후 첫 번째 설비ID에만 연결합니다 (3번 뷰의 excelMap과 동일한 규칙).
-      // 점검표 1건에 fid가 여러 개(최대 18개) 들어있어도, 엑셀 파일은 실제로는 1개뿐이므로
-      // 모든 fid에 중복으로 넣으면 팝업에서 같은 파일이 fid 개수만큼 중복 표시됩니다.
-      if (fidList.length === 0) return;
+    let fidList = [];
+    if (Array.isArray(data.facilityId)) {
+      fidList = data.facilityId;
+    } else if (typeof data.facilityId === "string") {
+      fidList = data.facilityId.split(",").map((s) => s.trim());
+    } else {
+      fidList = [String(data.facilityId)];
+    }
+    fidList.sort((a, b) => a.localeCompare(b));
 
-      const primaryFid = fidList[0];
-      const uploadedAt =
-        data.uploadedAt || data.createdAt || data.datetime || (doc.createTime ? doc.createTime.toDate().toISOString() : "");
+    if (fidList.length === 0) return;
 
-      // 전체 목록(팝업)도 동일하게 첫 번째 fid 한 곳에만 등록 → 중복 없음
-      const cleanFid = String(primaryFid).trim();
-      if (!excelListByFid[cleanFid]) excelListByFid[cleanFid] = [];
-      excelListByFid[cleanFid].push({
-        docId: doc.id,
-        file_url: data.file_url,
-        fileName: data.fileName || data.file_name || extractCleanFileName(data.file_url, uploadedAt),
-        uploadedAt,
-      });
+    const primaryFid = fidList[0];
+    const uploadedAt =
+      data.uploadedAt || data.createdAt || data.datetime || (doc.createTime ? doc.createTime.toDate().toISOString() : "");
+
+    const cleanFid = String(primaryFid).trim();
+    if (!excelListByFid[cleanFid]) excelListByFid[cleanFid] = [];
+    excelListByFid[cleanFid].push({
+      docId: doc.id,
+      file_url: data.file_url,
+      fileName: data.fileName || data.file_name || extractCleanFileName(data.file_url, uploadedAt),
+      uploadedAt,
     });
   });
 
-  // 설비별로 최신순 정렬 (uploadedAt 내림차순, 비교 불가 값은 뒤로)
-  // 모든 센터 컬렉션을 합친 뒤(Master 포함) 한 번에 정렬합니다.
+  // 설비별 최신순 정렬
   Object.keys(excelListByFid).forEach((fid) => {
     excelListByFid[fid].sort((a, b) => {
       const ta = a.uploadedAt ? new Date(a.uploadedAt).getTime() : 0;
@@ -147,10 +124,7 @@ async function buildExcelData(center) {
     });
   });
 
-  // [중요] excelMap(3번 뷰 아이콘용)도 Firestore 조회 순서가 아닌
-  // 정렬이 완료된 excelListByFid의 첫 번째 항목(= 최신 파일)으로 재구성합니다.
-  // Firestore는 get() 시 문서 반환 순서를 보장하지 않으므로,
-  // 루프 중 단순 덮어쓰기(excelMap[fid] = url)로는 최신순이 보장되지 않습니다.
+  // excelMap: 정렬 완료된 첫 번째 항목(최신)으로 구성
   Object.keys(excelListByFid).forEach((fid) => {
     excelMap[fid] = excelListByFid[fid][0].file_url;
   });
