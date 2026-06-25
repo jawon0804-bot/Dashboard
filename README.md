@@ -72,14 +72,18 @@ npm start
 # 1. 프로젝트 설정
 gcloud config set project m-smart-90148
 
-# 2. 빌드 + 배포 (소스에서 직접 — Dockerfile 자동 사용)
+# 2. 빌드 + 배포
+# --min-instances=1  : 항상 1개 인스턴스 유지 (콜드스타트 없음, 모래시계 커서 방지)
+# --max-instances=3  : 최대 3개까지만 스케일 아웃 (인스턴스별 캐시 분산 최소화)
+# 50개소 × 100명 규모에서도 center별 5분 캐시 덕분에 Firestore 읽기는
+# 최대 50번/5분 수준으로 유지됩니다.
 gcloud run deploy facility-dashboard \
   --source . \
   --region asia-northeast3 \
   --allow-unauthenticated \
+  --min-instances=1 \
+  --max-instances=3 \
   --set-env-vars FIREBASE_PROJECT_ID=m-smart-90148
-
-# 3. 배포 완료 후 출력되는 URL로 접속
 ```
 
 배포 시 Cloud Run 서비스 계정에 **Firestore 읽기 권한**(`roles/datastore.user` 또는
@@ -151,7 +155,7 @@ gcloud firestore indexes composite create \
 ```
 응답 (성공):
 ```json
-{ "ok": true, "center": "울산" }
+{ "ok": true, "center": "쿠팡울산2Sub-Hub" }
 ```
 `center`가 `"Master"`이면 전체 센터 통합 뷰가 표시됩니다.
 
@@ -160,13 +164,13 @@ gcloud firestore indexes composite create \
 { "ok": false, "message": "인증 실패: ..." }
 ```
 
-### GET /api/dashboard?center=울산
+### GET /api/dashboard?center=쿠팡울산2Sub-Hub
 응답:
 ```json
 {
   "ok": true,
   "cached": false,
-  "center": "울산",
+  "center": "쿠팡울산2Sub-Hub",
   "records": [
     { "date": "2026-06-01", "inspector": "홍길동", "fid": "기계_01", "file_url": "https://..." }
   ],
@@ -179,7 +183,7 @@ gcloud firestore indexes composite create \
 `records`는 최근 60일치 `inspection_logs`만 포함합니다. `excelCountByFid`는 설비ID별
 엑셀 보고서 전체 건수로, 3번 뷰의 "보고서 N건" 링크 표시에 사용됩니다.
 
-### GET /api/excel-files?center=울산&fid=기계_01&page=1&pageSize=15
+### GET /api/excel-files?center=쿠팡울산2Sub-Hub&fid=기계_01&page=1&pageSize=15
 특정 설비ID의 엑셀 보고서 전체 목록을 최신순으로 페이지네이션하여 반환합니다.
 응답:
 ```json
@@ -196,7 +200,7 @@ gcloud firestore indexes composite create \
 }
 ```
 
-### POST /api/dashboard/refresh?center=울산
+### POST /api/dashboard/refresh?center=쿠팡울산2Sub-Hub
 해당 center의 캐시를 즉시 무효화합니다 (관리/디버깅용). `center` 생략 시 전체 캐시 초기화.
 
 ## 캐시 동작
@@ -208,3 +212,38 @@ gcloud firestore indexes composite create \
   읽기 절감 효과를 극대화하려면 `--min-instances=1 --max-instances=1`로
   고정하거나, 필요 시 Redis(Memorystore) 같은 공유 캐시로 확장할 수 있습니다.
   (현재 트래픽 규모라면 단일 인스턴스 메모리 캐시로 충분합니다.)
+
+---
+
+## 50개소 확장 시 권장 구조 변경 (나중에 센터명 확정 후)
+
+현재는 센터마다 별도 Firestore 컬렉션(`MaxerveXXX_Excel`)을 사용합니다.
+50개소가 되면 컬렉션 50개 + 서버 매핑 테이블 50줄이 생기고,
+신규 센터마다 **코드 수정 + 재배포**가 필요합니다.
+
+**추천: 컬렉션 하나로 통합 (`ExcelFiles`) + `centerName` 필드 추가**
+
+```
+ExcelFiles 컬렉션
+├── { centerName: "쿠팡울산2Sub-Hub", facilityId: [...], file_url: "...", uploadedAt: "..." }
+├── { centerName: "쿠팡부산1Sub-Hub", facilityId: [...], file_url: "...", ... }
+└── ...
+```
+
+이렇게 바꾸면:
+- `EXCEL_COLLECTION_BY_CENTER` 매핑 테이블 불필요
+- 신규 센터 추가 시 **코드 수정/재배포 없이** Firestore에 문서만 넣으면 끝
+- `inspection_logs`와 동일한 패턴으로 일관성 향상
+
+이 변경은 기존 `MaxerveUlsan_Excel` 데이터를 마이그레이션해야 하므로,
+**센터명이 확정되고 본격 확장할 시점**에 진행하는 것을 권장합니다.
+
+## 트래픽 대응 (50개소 × 100명)
+
+현재 center별 5분 캐시로 Firestore 읽기를 최대 50번/5분 수준으로 유지합니다.
+배포 명령어에 `--min-instances=1 --max-instances=3`을 적용하면:
+- **min=1**: 항상 1개 인스턴스 유지 → 콜드스타트(모래시계 커서) 방지
+- **max=3**: 최대 3개로 스케일 아웃 제한 → 인스턴스별 캐시 분산 최소화
+
+트래픽이 더 늘어나면 Google Cloud Memorystore(Redis)로 공유 캐시를 구성하면
+인스턴스가 몇 개든 캐시를 공유할 수 있습니다.
