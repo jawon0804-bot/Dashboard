@@ -125,9 +125,6 @@ async function buildExcelData(center) {
       const uploadedAt =
         data.uploadedAt || data.createdAt || data.datetime || (doc.createTime ? doc.createTime.toDate().toISOString() : "");
 
-      // 기존 호환: 단일 링크 매핑 (3번 뷰 아이콘에서 사용)
-      excelMap[primaryFid] = data.file_url;
-
       // 전체 목록(팝업)도 동일하게 첫 번째 fid 한 곳에만 등록 → 중복 없음
       const cleanFid = String(primaryFid).trim();
       if (!excelListByFid[cleanFid]) excelListByFid[cleanFid] = [];
@@ -148,6 +145,14 @@ async function buildExcelData(center) {
       const tb = b.uploadedAt ? new Date(b.uploadedAt).getTime() : 0;
       return tb - ta;
     });
+  });
+
+  // [중요] excelMap(3번 뷰 아이콘용)도 Firestore 조회 순서가 아닌
+  // 정렬이 완료된 excelListByFid의 첫 번째 항목(= 최신 파일)으로 재구성합니다.
+  // Firestore는 get() 시 문서 반환 순서를 보장하지 않으므로,
+  // 루프 중 단순 덮어쓰기(excelMap[fid] = url)로는 최신순이 보장되지 않습니다.
+  Object.keys(excelListByFid).forEach((fid) => {
+    excelMap[fid] = excelListByFid[fid][0].file_url;
   });
 
   return { excelMap, excelListByFid };
@@ -230,6 +235,13 @@ app.post("/api/login", async (req, res) => {
     }
 
     const userData = snapshot.docs[0].data();
+
+    // active 필드가 명시적으로 true인 계정만 로그인 허용
+    // false이거나 필드가 없으면 차단 (Firebase 콘솔에서 active: true/false로 관리)
+    if (userData.active !== true) {
+      return res.status(403).json({ ok: false, message: "접근이 제한된 계정입니다. 관리자에게 문의하세요." });
+    }
+
     return res.json({ ok: true, center: userData.center || "" });
   } catch (err) {
     console.error("로그인 처리 오류:", err);
