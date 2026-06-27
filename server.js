@@ -81,21 +81,21 @@ async function buildExcelData(center) {
   // Master는 전체 조회, 일반 센터는 centerName 필터링
   const excelQuery = isMaster
     ? db.collection(EXCEL_COLLECTION)
-    : db.collection(EXCEL_COLLECTION).where("centerName", "==", center);
+    : db.collection(EXCEL_COLLECTION).where("center_name", "==", center);
 
   const excelSnap = await excelQuery.get();
 
   excelSnap.forEach((doc) => {
     const data = doc.data();
-    if (!data.facilityId || !data.file_url) return;
+    if (!data.facility_id || !data.file_url) return;
 
     let fidList = [];
-    if (Array.isArray(data.facilityId)) {
-      fidList = data.facilityId;
-    } else if (typeof data.facilityId === "string") {
-      fidList = data.facilityId.split(",").map((s) => s.trim());
+    if (Array.isArray(data.facility_id)) {
+      fidList = data.facility_id;
+    } else if (typeof data.facility_id === "string") {
+      fidList = data.facility_id.split(",").map((s) => s.trim());
     } else {
-      fidList = [String(data.facilityId)];
+      fidList = [String(data.facility_id)];
     }
     fidList.sort((a, b) => a.localeCompare(b));
 
@@ -103,7 +103,7 @@ async function buildExcelData(center) {
 
     const primaryFid = fidList[0];
     const uploadedAt =
-      data.uploadedAt || data.createdAt || data.datetime || (doc.createTime ? doc.createTime.toDate().toISOString() : "");
+      data.uploaded_at || data.createdAt || data.datetime || (doc.createTime ? doc.createTime.toDate().toISOString() : "");
 
     const cleanFid = String(primaryFid).trim();
     if (!excelListByFid[cleanFid]) excelListByFid[cleanFid] = [];
@@ -155,37 +155,46 @@ function setCache(key, data) {
 }
 
 // ---------------------------------------------------------------------------
-// 설비ID -> 위치명 매핑 (기존 HTML에 하드코딩되어 있던 것을 서버로 이동)
-// 다른 팀이 UI만 바꾸더라도 이 매핑 로직은 그대로 서버에서 응답에 포함되므로
-// 프론트는 이 데이터를 몰라도 됩니다.
+// 설비ID -> 위치명 매핑 (facility_info 컬렉션에서 동적으로 조회)
+// 센터별 서브컬렉션: facility_info/{center}/facilities/{fid}
+//   fid_name: 위치명, category: 카테고리, center_name: 센터명
+// 결과는 메모리에 캐시 (CACHE_TTL_MS 동일 적용)
 // ---------------------------------------------------------------------------
-const FID_LOCATIONS = {
-  "전기_01": "수변전일지_모니터링PC", "전기_02": "수변전일지_전기실", "전기_03": "수변전설비_특고압부",
-  "전기_04": "수변전설비_저압부", "전기_05": "수변전설비_발전설비",
-  "소방_01": "1F_1구역_소화기", "소방_02": "1F_2구역_가스계 소화기",
-  "소방_05": "1F_1구역_옥내소화전", "소방_06": "1F_2구역_옥외소화전",
-  "소방_07": "3F_A구역_방화셔터", "소방_08": "3F_B구역_스프링클러", "소방_10": "3F_C구역_화재감지기",
-  "순찰_01": "외곽 선로", "순찰_02": "옥상 공조실 주행",
-  "기계_01": "OHD1F_1A01", "기계_02": "OHD1F_1A02", "기계_03": "OHD1F_1A03", "기계_04": "OHD1F_1A04",
-  "기계_05": "OHD1F_1A05", "기계_06": "OHD1F_1A06", "기계_07": "OHD1F_1A07", "기계_08": "OHD1F_1A08",
-  "기계_09": "OHD3F_3A01", "기계_10": "OHD3F_3A02", "기계_11": "OHD3F_3A03", "기계_12": "OHD3F_3A04",
-  "기계_13": "OHD3F_3A05", "기계_14": "OHD3F_3A06", "기계_15": "OHD3F_3A07", "기계_16": "OHD3F_3A08",
-  "기계_17": "OHD3F_3A09", "기계_18": "OHD3F_3A10",
-  "기계_19": "도크레벨러1F_1_1A02", "기계_20": "도크레벨러1F_2_1A03", "기계_21": "도크레벨러1F_3_1A04",
-  "기계_22": "도크레벨러1F_4_1A05", "기계_23": "도크레벨러1F_5_1A06", "기계_24": "도크레벨러1F_6_1A07",
-  "기계_25": "도크레벨러3F_7_3A02", "기계_26": "도크레벨러3F_8_3A03", "기계_27": "도크레벨러3F_9_3A04",
-  "기계_28": "도크레벨러3F_10_3A05", "기계_29": "도크레벨러3F_11_3A06", "기계_30": "도크레벨러3F_12_3A07",
-  "기계_31": "도크레벨러3F_13_3A08", "기계_32": "도크레벨러3F_14_3A09",
-  "기계_33": "도크레벨러3F_15_3A10", "기계_34": "도크레벨러3F_16_3A11",
-  "기계_35": "승강기_1호", "기계_36": "승강기_2호", "기계_37": "승강기_3호",
-  "기계_38": "승강기_1호(기계실)", "기계_39": "승강기_2호(기계실)", "기계_40": "승강기_3호(기계실)",
-  "기계_41": "집수정펌프_기계실2EA", "기계_42": "집수정펌프_2Core_PIT_2EA", "기계_43": "집수정펌프_3Core_PIT_2EA",
-  "기계_44": "집수정펌프_전기실_DA_2EA", "기계_45": "집수정펌프_1Core_ELEV_PIT_1EA",
-  "기계_46": "집수정펌프_2Core_PIT_오배수_1SET", "기계_47": "집수정펌프_3Core_PIT_오배수_1SET",
-  "기계_48": "부스터펌프_상수공급펌프", "기계_49": "부스터펌프_저수조공급펌프",
-  "기계_50": "오수정화설비_2Core_PIT", "기계_51": "오수정화설비_3Core_PIT",
-  "기계_52": "저수조설비_기계실", "기계_53": "배기팬_1호_2Core", "기계_54": "배기팬_2호_3Core",
-};
+async function getFidLocations(center) {
+  const cacheKey = `fidLocations:${center}`;
+  const cached = getCache(cacheKey);
+  if (cached) return cached;
+
+  const locations = {};
+  try {
+    const isMaster = center === MASTER_CENTER_NAME;
+
+    if (isMaster) {
+      // Master: facility_info 전체 센터 서브컬렉션 병렬 조회
+      const centersSnap = await db.collection("facility_info").get();
+      await Promise.all(centersSnap.docs.map(async (centerDoc) => {
+        const snap = await centerDoc.ref.collection("facilities").get();
+        snap.forEach((doc) => {
+          locations[doc.id] = doc.data().fid_name || doc.id;
+        });
+      }));
+    } else {
+      const snap = await db
+        .collection("facility_info")
+        .doc(center)
+        .collection("facilities")
+        .get();
+      snap.forEach((doc) => {
+        locations[doc.id] = doc.data().fid_name || doc.id;
+      });
+    }
+  } catch (e) {
+    console.error("facility_info 조회 오류:", e);
+  }
+
+  setCache(cacheKey, locations);
+  return locations;
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/login
@@ -249,19 +258,20 @@ app.get("/api/dashboard", async (req, res) => {
     // Master는 centerName 필터 없이 전체 센터를 60일 리밋만 걸어서 조회
     const logsQuery = isMaster
       ? db.collection("inspection_logs").where("datetime", ">=", lookbackDate)
-      : db.collection("inspection_logs").where("centerName", "==", center).where("datetime", ">=", lookbackDate);
+      : db.collection("inspection_logs").where("center_name", "==", center).where("datetime", ">=", lookbackDate);
 
     // 엑셀 보고서: 리밋 없이 전체. Master는 등록된 모든 센터 컬렉션을 병렬 조회 후 합산
-    const [logsSnap, { excelMap, excelListByFid }] = await Promise.all([
+    const [logsSnap, { excelMap, excelListByFid }, fidLocations] = await Promise.all([
       logsQuery.get(),
       buildExcelData(center),
+      getFidLocations(center),
     ]);
 
     // 점검 기록 가공
     const records = [];
     logsSnap.forEach((doc) => {
       const data = doc.data();
-      const fids = Array.isArray(data.facilityId) ? data.facilityId : [data.facilityId || "알수없음"];
+      const fids = Array.isArray(data.facility_id) ? data.facility_id : [data.facility_id || "알수없음"];
 
       const firstFid = fids[0] ? String(fids[0]).trim() : "";
       const linkForThisRecord = excelMap[firstFid] || "";
@@ -287,7 +297,7 @@ app.get("/api/dashboard", async (req, res) => {
       records,
       excelMap,
       excelCountByFid,
-      fidLocations: FID_LOCATIONS,
+      fidLocations,
       generatedAt: new Date().toISOString(),
     };
 
