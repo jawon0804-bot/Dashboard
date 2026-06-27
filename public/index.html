@@ -561,7 +561,7 @@
             }
 
             const rows = items.map(item => {
-                const dateText = item.uploadedAt ? String(item.uploadedAt).substring(0, 10) : "-";
+                const dateText = item.uploaded_at ? String(item.uploaded_at).substring(0, 10) : "-";
                 const fileName = item.fileName || "보고서.xlsx";
 
                 // [구조 변경] 설비ID(예: 전기_01)보다 위치명(예: 수변전일지_모니터링PC)이 더 중요하므로
