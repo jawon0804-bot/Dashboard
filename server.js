@@ -225,7 +225,7 @@ app.post("/api/login", async (req, res) => {
       return res.status(403).json({ ok: false, message: "접근이 제한된 계정입니다. 관리자에게 문의하세요." });
     }
 
-    return res.json({ ok: true, center: userData.center || "" });
+    return res.json({ ok: true, center: userData.center_name || "" });
   } catch (err) {
     console.error("로그인 처리 오류:", err);
     return res.status(500).json({ ok: false, message: "서버 연결에 문제가 발생했습니다." });
