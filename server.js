@@ -392,6 +392,20 @@ app.post("/api/dashboard/refresh", (req, res) => {
   res.json({ ok: true });
 });
 
+// ── /api/fidlocations ──────────────────────────────────────────
+// fid → fid_name 매핑 반환 (m-event 이벤트트래커에서 사용)
+app.get("/api/fidlocations", async (req, res) => {
+  const center = (req.query.center || "").toString().trim();
+  if (!center) return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
+  try {
+    const locations = await getFidLocations(center);
+    return res.json({ ok: true, fidLocations: locations });
+  } catch(e) {
+    console.error("fidlocations 오류:", e);
+    return res.status(500).json({ ok: false, message: "조회 중 오류가 발생했습니다." });
+  }
+});
+
 app.get("/healthz", (req, res) => res.send("ok"));
 
 const PORT = process.env.PORT || 8080;
