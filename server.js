@@ -155,8 +155,8 @@ function setCache(key, data) {
 }
 
 // ---------------------------------------------------------------------------
-// 설비ID -> 위치명 매핑 (facility_info 컬렉션에서 동적으로 조회)
-// 센터별 서브컬렉션: facility_info/{center}/facilities/{fid}
+// 설비ID -> 위치명 매핑 (center_configs/{center}/facilities 에서 동적으로 조회)
+// 센터별 서브컬렉션: center_configs/{center}/facilities/{fid}
 //   fid_name: 위치명, category: 카테고리, center_name: 센터명
 // 결과는 메모리에 캐시 (CACHE_TTL_MS 동일 적용)
 // ---------------------------------------------------------------------------
@@ -170,8 +170,8 @@ async function getFidLocations(center) {
     const isMaster = center === MASTER_CENTER_NAME;
 
     if (isMaster) {
-      // Master: facility_info 전체 센터 서브컬렉션 병렬 조회
-      const centersSnap = await db.collection("facility_info").get();
+      // Master: center_configs 전체 센터 서브컬렉션 병렬 조회
+      const centersSnap = await db.collection("center_configs").get();
       await Promise.all(centersSnap.docs.map(async (centerDoc) => {
         const snap = await centerDoc.ref.collection("facilities").get();
         snap.forEach((doc) => {
@@ -180,7 +180,7 @@ async function getFidLocations(center) {
       }));
     } else {
       const snap = await db
-        .collection("facility_info")
+        .collection("center_configs")
         .doc(center)
         .collection("facilities")
         .get();
@@ -189,7 +189,7 @@ async function getFidLocations(center) {
       });
     }
   } catch (e) {
-    console.error("facility_info 조회 오류:", e);
+    console.error("center_configs/facilities 조회 오류:", e);
   }
 
   setCache(cacheKey, locations);
