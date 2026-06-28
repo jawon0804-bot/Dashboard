@@ -197,6 +197,50 @@ async function getFidLocations(center) {
 }
 
 // ---------------------------------------------------------------------------
+// fid → sheet_label 역매핑 함수
+// center_configs/{center}/inspections 에서 fids 배열 읽어서 fid → sheet_label 매핑
+async function getSheetLabels(center) {
+  const cacheKey = `sheetLabels:${center}`;
+  const cached = getCache(cacheKey);
+  if (cached) return cached;
+
+  const labels = {};
+  try {
+    const isMaster = center === MASTER_CENTER_NAME;
+
+    if (isMaster) {
+      const centersSnap = await db.collection("center_configs").get();
+      await Promise.all(centersSnap.docs.map(async (centerDoc) => {
+        const snap = await centerDoc.ref.collection("inspections").get();
+        snap.forEach((doc) => {
+          const data = doc.data();
+          const label = data.sheet_label || doc.id;
+          const fids = Array.isArray(data.fids) ? data.fids : [];
+          fids.forEach(fid => { labels[String(fid).trim()] = label; });
+        });
+      }));
+    } else {
+      const snap = await db
+        .collection("center_configs")
+        .doc(center)
+        .collection("inspections")
+        .get();
+      snap.forEach((doc) => {
+        const data = doc.data();
+        const label = data.sheet_label || doc.id;
+        const fids = Array.isArray(data.fids) ? data.fids : [];
+        fids.forEach(fid => { labels[String(fid).trim()] = label; });
+      });
+    }
+  } catch(e) {
+    console.error("sheetLabels 조회 오류:", e);
+  }
+
+  setCache(cacheKey, labels);
+  return labels;
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/login
 // 기존 클라이언트의 UserDB 조회(이름+전화번호) 로직을 서버로 이전
 // ---------------------------------------------------------------------------
@@ -398,8 +442,11 @@ app.get("/api/fidlocations", async (req, res) => {
   const center = (req.query.center || "").toString().trim();
   if (!center) return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
   try {
-    const locations = await getFidLocations(center);
-    return res.json({ ok: true, fidLocations: locations });
+    const [locations, sheetLabels] = await Promise.all([
+      getFidLocations(center),
+      getSheetLabels(center),
+    ]);
+    return res.json({ ok: true, fidLocations: locations, sheetLabels });
   } catch(e) {
     console.error("fidlocations 오류:", e);
     return res.status(500).json({ ok: false, message: "조회 중 오류가 발생했습니다." });
