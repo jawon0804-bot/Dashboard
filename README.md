@@ -1,171 +1,97 @@
-# 시설물 점검 대시보드 — Cloud Run 분리 버전
+# 📊 Dashboard (facility-dashboard) — 관리자 모니터링 대시보드
 
-## 무엇이 바뀌었나
+> **한 줄 설명**: 관리자가 로그인해서 센터별 점검 현황을 차트와 표로 한눈에 보고, 엑셀 보고서도 다운로드할 수 있는 화면이에요. Firestore를 직접 들여다보지 않고, 중간에 있는 서버가 데이터를 캐싱해서 빠르고 안전하게 보여줘요.
 
-| 구분 | 기존 (단일 HTML) | 변경 후 |
+---
+
+## 🧸 이게 뭐 하는 거예요?
+
+**교무실 모니터 + 비서**를 합친 거예요!
+
+- 선생님들이 교무실에서 "어느 반이 청소 검사를 통과했는지" 한눈에 보는 화면처럼
+- 관리자가 로그인하면 "어느 설비가 며칠에 몇 번 점검됐는지"를 그래프와 표로 볼 수 있어요
+- 그리고 **비서 역할의 서버(`server.js`)**가 중간에서 Firestore에 직접 묻지 않고, 한 번 물어본 답을 5분 동안 기억해뒀다가 같은 질문이 또 오면 다시 안 묻고 바로 대답해줘요 (캐싱)
+
+---
+
+## 🗺️ 어디서 볼 수 있나요?
+
+| 항목 | 내용 |
+|---|---|
+| 배포 위치 | Cloud Run |
+| 서비스 이름 | `facility-dashboard` |
+| 리전 | `asia-northeast3` (서울) |
+| 백엔드 파일 | `server.js` (Express) |
+| 프론트엔드 파일 | `public/index.html` |
+| Firebase 프로젝트 | `m-smart-90148` |
+
+---
+
+## 🏗️ 가장 중요한 변화: "예전 버전"에서 "지금 버전"으로
+
+이 서비스는 원래 브라우저가 Firebase에 직접 접속하는 구조였다가, **Cloud Run 서버를 사이에 끼워 넣는 구조로 리팩토링**됐어요. 이 변화를 이해하는 게 Dashboard를 이해하는 핵심이에요.
+
+| 구분 | 예전 방식 | 지금 방식 |
 |---|---|---|
-| Firestore 읽기 | 브라우저가 매번 직접 `.get()` | Cloud Run 서버가 전담, **5분 캐시** 적용 |
-| 로그인 인증 | 클라이언트에서 `UserDB` 직접 조회 | 서버 `/api/login`에서 처리 |
-| 데이터 가공 (fid 분해, 엑셀 링크 매핑) | 클라이언트 JS | 서버 `/api/dashboard`에서 가공 후 JSON 응답 |
-| Firebase API 키 | HTML 소스에 노출 | 서버에만 존재 (서비스 계정 사용) |
-| UI / 차트 렌더링 | 그대로 | 그대로 (Chart.js 로직 변경 없음) |
-
-다른 팀이 UI를 바꾸고 싶다면 `public/index.html`만 통째로 교체해도 됩니다.
-**API 계약**(`/api/login`, `/api/dashboard`의 요청/응답 형식)만 지키면 백엔드는 손댈 필요가 없습니다.
+| Firestore 읽기 | 브라우저가 매번 직접 조회 | **서버(`server.js`)가 전담** + 5분 캐시 |
+| 로그인 인증 | 브라우저가 `UserDB`를 직접 조회 | 서버의 `/api/login`에서 처리 |
+| 데이터 가공 | 브라우저 JS가 직접 가공 | 서버가 가공해서 깔끔한 JSON으로 응답 |
+| Firebase 인증 정보 | 브라우저 코드에 노출 | **서버에만 존재** (서비스 계정 사용) |
 
 ```
-[브라우저: index.html]  →  fetch  →  [Cloud Run: server.js]  →  [Firestore]
-   UI / Chart.js만 담당              인증 + 데이터 가공 +
-                                      5분 캐시 (읽기 절감)
+[브라우저: index.html]  →  fetch(/api/...)  →  [Cloud Run: server.js]  →  [Firestore]
+   화면(차트)만 담당                              인증 + 데이터 가공 +
+                                                    5분 캐시로 읽기 절감
 ```
 
-## 폴더 구조
+> 🧸 비유: 예전엔 손님(브라우저)이 직접 창고(Firestore)에 들어가서 물건을 찾았는데, 지금은 **창구 직원(서버)**이 생겨서 손님은 "이거 주세요" 요청만 하고, 직원이 창고에서 찾아다 줘요. 직원은 자주 찾는 물건은 책상 위에 잠깐 꺼내놓고(캐시) 다음 손님이 또 찾으면 창고까지 안 가고 바로 줘요.
+
+> ⚠️ **보안 관련**: 예전 방식(브라우저가 Firebase에 직접 접속)에서는 Firebase API 키가 누구나 볼 수 있는 HTML 소스에 그대로 노출됐어요. 지금은 서버만 Firestore에 접근하니, 그 키가 브라우저에 노출되지 않아요. 이게 이번 구조 변경의 중요한 이유 중 하나예요.
+
+---
+
+## 📁 폴더 구조
 
 ```
 cloudrun-dashboard/
-├── server.js          # Express API 서버 (Firestore 읽기 전담, 캐시)
+├── server.js          # Express API 서버 (Firestore 읽기 전담 + 캐싱)
 ├── package.json
 ├── Dockerfile
 ├── .dockerignore
 └── public/
-    └── index.html      # 프론트엔드 (Firebase SDK 제거됨)
+    └── index.html      # 화면 (Firebase SDK 없이 fetch()로만 통신)
 ```
 
-## 배포 전 꼭 확인할 것
+> `index.html`은 `server.js`가 `express.static("public")`로 직접 서빙해요. 즉 화면과 API가 같은 서버, 같은 주소에서 나가기 때문에 `index.html` 안의 `API_BASE`는 빈 문자열(`""`)로 둬도 동작해요.
 
-1. **로고 이미지 추가**
-   `index.html`이 `assets/logo.jpg`를 참조합니다. 원본 로고 파일을
-   `public/assets/logo.jpg` 경로에 넣어주세요. (없으면 로고만 안 보이고 나머지는 정상 동작)
+---
 
-2. **Firestore 컬렉션/필드명은 기존과 동일하게 유지**
-   - `UserDB` (name, phone, center)
-   - `inspection_logs` (centerName, facilityId, datetime, worker)
-   - `MaxerveUlsan_Excel` (facilityId, file_url)
+## 🔌 API 엔드포인트
 
-3. **Firestore 복합 색인 미리 생성** (자세한 내용은 아래 "Master 센터 & 60일 리밋" 섹션 참고)
-   ```bash
-   gcloud firestore indexes composite create \
-     --collection-group=inspection_logs \
-     --field-config field-path=centerName,order=ascending \
-     --field-config field-path=datetime,order=ascending \
-     --project=m-smart-90148
-   ```
+| 엔드포인트 | 메서드 | 용도 |
+|---|---|---|
+| `/api/login` | POST | 이름+전화번호로 로그인, 소속 센터 반환 |
+| `/api/dashboard` | GET | 센터별 점검 기록 + 엑셀 링크 + 설비 위치명 한 번에 조회 |
+| `/api/excel-files` | GET | 특정 설비(또는 전체)의 엑셀 보고서 목록을 페이지 단위로 조회 |
+| `/api/fidlocations` | GET | 설비ID → 위치명/시트라벨 매핑 (m-event가 이걸 가져다 씀) |
+| `/api/dashboard/refresh` | POST | 캐시 강제 초기화 (관리/디버깅용) |
+| `/healthz` | GET | 서버 살아있는지 확인용 |
 
-## 로컬 테스트
-
-```bash
-cd cloudrun-dashboard
-npm install
-
-# 로컬에서 Firestore 접근하려면 서비스 계정 키가 필요합니다.
-# GCP 콘솔 > IAM > 서비스 계정 > 키 생성(JSON) 후:
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
-export FIREBASE_PROJECT_ID="m-smart-90148"
-
-npm start
-# http://localhost:8080 접속
-```
-
-## Cloud Run 배포
-
-```bash
-# 1. 프로젝트 설정
-gcloud config set project m-smart-90148
-
-# 2. 빌드 + 배포
-# --min-instances=1  : 항상 1개 인스턴스 유지 (콜드스타트 없음, 모래시계 커서 방지)
-# --max-instances=3  : 최대 3개까지만 스케일 아웃 (인스턴스별 캐시 분산 최소화)
-# 50개소 × 100명 규모에서도 center별 5분 캐시 덕분에 Firestore 읽기는
-# 최대 50번/5분 수준으로 유지됩니다.
-gcloud run deploy facility-dashboard \
-  --source . \
-  --region asia-northeast3 \
-  --allow-unauthenticated \
-  --min-instances=1 \
-  --max-instances=3 \
-  --set-env-vars FIREBASE_PROJECT_ID=m-smart-90148
-```
-
-배포 시 Cloud Run 서비스 계정에 **Firestore 읽기 권한**(`roles/datastore.user` 또는
-`roles/datastore.viewer`)이 있는지 확인하세요. 기본 컴퓨트 서비스 계정을 쓰면
-프로젝트 내 Firestore에 대해 보통 자동으로 권한이 있지만, 별도 서비스 계정을
-지정했다면 IAM에서 역할을 추가해야 합니다.
-
-```bash
-gcloud projects add-iam-policy-binding m-smart-90148 \
-  --member="serviceAccount:<CLOUD_RUN_SERVICE_ACCOUNT>" \
-  --role="roles/datastore.user"
-```
-
-## Master 센터 & 60일 리밋 (신규)
-
-- **`UserDB`의 `center` 필드 값이 `"Master"`인 사용자**로 로그인하면, 특정 센터로 필터링하지 않고
-  **모든 센터의 `inspection_logs`**와 **등록된 모든 엑셀 컬렉션**(`EXCEL_COLLECTION_BY_CENTER`에 등록된 것 전체)을
-  합쳐서 보여줍니다.
-- 새 센터가 추가되면 `server.js` 상단의 `EXCEL_COLLECTION_BY_CENTER`에 한 줄만 추가하면
-  Master 화면에도 자동으로 포함됩니다.
-- **`inspection_logs`(점검기록)는 최근 60일치만 조회**합니다 (`INSPECTION_LOGS_LOOKBACK_DAYS` 상수로 조절 가능).
-  엑셀 보고서(`MaxerveXXX_Excel`)는 리밋 없이 전체 조회됩니다.
-
-### ⚠️ Firestore 복합 색인(Composite Index) 필요
-
-일반 센터 조회는 `where("centerName", "==", center).where("datetime", ">=", lookbackDate)`처럼
-**동등 조건 + 범위 조건을 함께** 사용합니다. Firestore는 이런 복합 쿼리에 **복합 색인**을 요구합니다.
-
-**미리 만들어두는 방법 (배포 전 1회, 권장)**
-
-```bash
-gcloud firestore indexes composite create \
-  --collection-group=inspection_logs \
-  --field-config field-path=centerName,order=ascending \
-  --field-config field-path=datetime,order=ascending \
-  --project=m-smart-90148
-```
-
-또는 Firebase 콘솔에서 직접: **Firestore Database → 색인(Indexes) → 복합 색인 만들기**
-- 컬렉션 ID: `inspection_logs`
-- 필드 1: `centerName` (오름차순)
-- 필드 2: `datetime` (오름차순)
-- 쿼리 범위: 컬렉션(Collection)
-
-생성 후 "사용 설정됨(Enabled)" 상태가 될 때까지 보통 몇 분~십여 분 걸립니다.
-
-**미리 안 만들었다면**: 배포 후 처음 일반 센터로 로그인할 때 서버 로그(Cloud Run 로그 또는 로컬 콘솔)에
-에러와 함께 색인 생성 링크(`https://console.firebase.google.com/...`)가 자동으로 출력됩니다.
-그 링크를 클릭해도 동일하게 1회 생성됩니다. (Master 조회는 단일 조건이라 색인이 따로 필요 없습니다.)
-
-## 보고서 팝업 (신규)
-
-3번 뷰 피봇 테이블의 "보고서" 칸이 이제 `보고서 N건` 텍스트 링크로 바뀌었습니다.
-클릭하면 해당 설비ID의 엑셀 보고서 **전체 목록**을 최신순으로, 페이지당 15건씩
-페이지네이션(`1 2 3 ...`)하여 팝업으로 보여줍니다.
-
-- 제목: `설비ID(위치명)` 형식 (예: `기계_01 (OHD1F_1A01)`)
-- 각 행 클릭(또는 다운로드 아이콘) 시 새 탭에서 엑셀 파일 다운로드
-- 페이지네이션은 `/api/excel-files` 호출로 처리되며, `/api/dashboard`가 만들어둔
-  5분 캐시(`excelList:{center}`)를 재사용하므로 팝업을 여러 번 열어도 추가 Firestore 읽기가
-  거의 발생하지 않습니다.
-
-
-
-### POST /api/login
-요청:
+### 1️⃣ `POST /api/login`
 ```json
+// 요청
 { "name": "홍길동", "phone": "010-1234-5678" }
-```
-응답 (성공):
-```json
-{ "ok": true, "center": "쿠팡울산2Sub-Hub" }
-```
-`center`가 `"Master"`이면 전체 센터 통합 뷰가 표시됩니다.
 
-응답 (실패):
-```json
+// 성공 응답
+{ "ok": true, "center": "쿠팡울산2Sub-Hub" }
+
+// 실패 응답
 { "ok": false, "message": "인증 실패: ..." }
 ```
+- `UserDB`에서 이름+전화번호가 일치하는 사용자를 찾고, **`active`가 명시적으로 `true`인 계정만** 로그인을 허용해요.
+- `center`가 `"Master"`로 오면 화면에서 전체 센터 통합 뷰가 표시돼요.
 
-### GET /api/dashboard?center=쿠팡울산2Sub-Hub
-응답:
+### 2️⃣ `GET /api/dashboard?center=센터명`
 ```json
 {
   "ok": true,
@@ -180,70 +106,150 @@ gcloud firestore indexes composite create \
   "generatedAt": "2026-06-19T06:40:00.000Z"
 }
 ```
-`records`는 최근 60일치 `inspection_logs`만 포함합니다. `excelCountByFid`는 설비ID별
-엑셀 보고서 전체 건수로, 3번 뷰의 "보고서 N건" 링크 표시에 사용됩니다.
+- `records`: 최근 **60일치** `inspection_logs`만 포함 (오래된 데이터까지 한꺼번에 불러오면 느려지니까 제한을 둠)
+- `excelMap`: 설비별 **가장 최신** 엑셀 파일 1건의 링크 (표에서 아이콘 클릭 시 바로 다운로드용)
+- `excelCountByFid`: 설비별 엑셀 보고서 **전체 건수** ("보고서 N건" 링크 표시용)
+- `fidLocations`: 설비ID → 위치명 매핑 (예: `기계_01` → `OHD1F_1A01`)
 
-### GET /api/excel-files?center=쿠팡울산2Sub-Hub&fid=기계_01&page=1&pageSize=15
-특정 설비ID의 엑셀 보고서 전체 목록을 최신순으로 페이지네이션하여 반환합니다.
-응답:
+### 3️⃣ `GET /api/excel-files?center=센터명&fid=기계_01&page=1&pageSize=15`
+특정 설비(또는 `fid` 생략 시 센터 전체)의 엑셀 보고서를 최신순으로 페이지네이션해서 줘요. "보고서 N건" 링크를 클릭했을 때 뜨는 팝업이 이 API를 써요.
+
+### 4️⃣ `GET /api/fidlocations?center=센터명`
 ```json
-{
-  "ok": true,
-  "fid": "기계_01",
-  "page": 1,
-  "pageSize": 15,
-  "totalCount": 37,
-  "totalPages": 3,
-  "items": [
-    { "docId": "abc123", "file_url": "https://...", "fileName": "2026-06-01_점검.xlsx", "uploadedAt": "2026-06-01T10:00:00" }
-  ]
-}
+{ "ok": true, "fidLocations": {"기계_01": "OHD1F_1A01"}, "sheetLabels": {"기계_01": "승강기 점검일지"} }
 ```
-
-### POST /api/dashboard/refresh?center=쿠팡울산2Sub-Hub
-해당 center의 캐시를 즉시 무효화합니다 (관리/디버깅용). `center` 생략 시 전체 캐시 초기화.
-
-## 캐시 동작
-
-- center별로 **5분(300초)** 캐시
-- 동일 현장에서 5분 이내 새로고침/탭 재방문 시 Firestore 실제 읽기 발생 안 함
-- 5분이 지나면 다음 요청 시 자동 갱신
-- Cloud Run이 여러 인스턴스로 스케일 아웃되면 인스턴스마다 캐시가 분리됩니다.
-  읽기 절감 효과를 극대화하려면 `--min-instances=1 --max-instances=1`로
-  고정하거나, 필요 시 Redis(Memorystore) 같은 공유 캐시로 확장할 수 있습니다.
-  (현재 트래픽 규모라면 단일 인스턴스 메모리 캐시로 충분합니다.)
+> 🔗 **이 엔드포인트는 m-event(이벤트 트래커)가 가져다 써요.** m-event 화면이 설비ID를 사람이 읽기 좋은 이름으로 바꿔서 보여줄 때 이 API를 호출해요. Dashboard와 m-event가 서로 연결되어 있다는 걸 보여주는 부분이에요.
 
 ---
 
-## 50개소 확장 시 권장 구조 변경 (나중에 센터명 확정 후)
+## 🔐 로그인 & 권한
 
-현재는 센터마다 별도 Firestore 컬렉션(`MaxerveXXX_Excel`)을 사용합니다.
-50개소가 되면 컬렉션 50개 + 서버 매핑 테이블 50줄이 생기고,
-신규 센터마다 **코드 수정 + 재배포**가 필요합니다.
+- 일반 사용자: 로그인하면 자기 소속 센터(`center`)의 데이터만 보여요.
+- `center: "Master"`인 사용자: **모든 센터**의 데이터를 통합해서 봐요. (`/api/dashboard`, `/api/excel-files`, `/api/fidlocations` 모두 Master를 특별 취급해서, 센터 필터 없이 전체 조회하도록 분기되어 있어요)
 
-**추천: 컬렉션 하나로 통합 (`ExcelFiles`) + `centerName` 필드 추가**
+> 🧸 비유: 일반 선생님은 자기 반 출석부만 보고, 교장 선생님(Master)은 전교생 출석부를 한 번에 보는 것과 같아요.
 
+---
+
+## ⚡ 캐싱 — 왜, 어떻게 빠르게 만들었나요?
+
+50개 센터 × 100명 규모의 트래픽을 가정하고 설계됐어요. 매번 Firestore에 직접 묻지 않도록 **메모리 캐시**를 둬서 읽기 비용을 크게 줄였어요.
+
+| 항목 | 내용 |
+|---|---|
+| 캐시 유지 시간 | 5분 (300초) |
+| 캐시 단위 | 센터별로 따로 (`dashboard:{center}`, `excelList:{center}`, `fidLocations:{center}`, `sheetLabels:{center}`) |
+| 효과 | 같은 센터에서 5분 안에 여러 번 새로고침해도 Firestore 실제 읽기는 한 번만 발생 |
+
+> 🧸 비유: 식당에서 같은 메뉴를 자꾸 물어보면, 직원이 매번 주방까지 가서 확인하지 않고 "방금 확인했는데 짜장면 있어요!"라고 5분 동안은 외워서 바로 대답해주는 것과 같아요.
+
+> ⚠️ **알아둘 점**: Cloud Run은 트래픽이 늘면 인스턴스를 여러 개로 늘릴 수 있는데(스케일 아웃), **이 캐시는 인스턴스 메모리 안에만 있어서 인스턴스끼리 서로 공유가 안 돼요.** 그래서 배포 시 `--min-instances=1 --max-instances=3`처럼 인스턴스 개수를 적당히 제한해서 캐시 분산을 최소화해요. 트래픽이 더 늘어나면 Redis(Memorystore) 같은 공유 캐시로 바꿀 수 있어요.
+
+---
+
+## 📈 화면에 보이는 3가지 뷰 (차트/표)
+
+| 뷰 | 형태 | 내용 |
+|---|---|---|
+| 1번 뷰 | 막대그래프 | 날짜별 일일 점검 횟수 |
+| 2번 뷰 | 가로 막대그래프 | 설비 카테고리별(소방/전기/순찰/기계공조/기타) 점검 건수 |
+| 3번 뷰 | 표 (피봇 테이블) | 설비ID별 총 점검 건수 + 최신 엑셀 다운로드 아이콘 + "보고서 N건" 팝업 링크 |
+
+카테고리 분류는 설비ID 문자열에 "소방", "전기", "순찰", "기계"/"공조" 같은 키워드가 포함되어 있는지로 단순하게 나눠요. (그 외는 전부 "기타설비"로 분류)
+
+---
+
+## ☁️ Firestore 연동
+
+| 컬렉션/경로 | 용도 |
+|---|---|
+| `UserDB` | 로그인 인증 (`name`, `phone`, `active`, `center_name`) |
+| `inspection_logs` | 점검 기록 (최근 60일만 조회) |
+| `Maxerve_Excel` | 생성된 엑셀 보고서 목록 (단일 컬렉션, `center_name`으로 필터링) |
+| `center_configs/{center}/facilities` | 설비ID → 위치명(`fid_name`) 매핑 |
+| `center_configs/{center}/inspections` | 설비ID → 점검표 이름(`sheet_label`) 매핑 |
+
+> 💡 **컬렉션 통합 이력**: 예전엔 센터마다 별도 엑셀 컬렉션(`MaxerveUlsan_Excel` 등)을 썼는데, 지금은 `Maxerve_Excel` 하나로 통합하고 `center_name` 필드로 구분해요. 그래서 새 센터가 추가돼도 **코드 수정·재배포 없이** Firestore에 문서만 넣으면 바로 동작해요.
+
+---
+
+## ⚠️ Firestore 복합 인덱스 (배포 전 꼭 확인)
+
+일반 센터 조회는 아래처럼 동등 조건 + 범위 조건을 같이 써요:
+```js
+.where("center_name", "==", center).where("datetime", ">=", lookbackDate)
 ```
-ExcelFiles 컬렉션
-├── { centerName: "쿠팡울산2Sub-Hub", facilityId: [...], file_url: "...", uploadedAt: "..." }
-├── { centerName: "쿠팡부산1Sub-Hub", facilityId: [...], file_url: "...", ... }
-└── ...
+이런 조합은 Firestore가 **복합 인덱스**를 요구해요. 미리 안 만들어두면 처음 조회할 때 에러가 나고, 에러 메시지에 색인 생성 링크가 자동으로 찍혀요 (그 링크 눌러도 1회성으로 생성 가능).
+
+**미리 만들어두는 방법(권장):**
+```bash
+gcloud firestore indexes composite create \
+  --collection-group=inspection_logs \
+  --field-config field-path=center_name,order=ascending \
+  --field-config field-path=datetime,order=ascending \
+  --project=m-smart-90148
+```
+> ⚠️ 참고: 예전 설계 문서에는 필드명이 `centerName`으로 적혀 있었는데, 실제 코드는 `center_name`(스네이크케이스)을 쓰고 있어요. 인덱스를 만들 때 **반드시 실제 필드명인 `center_name`**으로 만들어야 해요. (Master 조회는 단일 조건이라 인덱스가 따로 필요 없어요.)
+
+> 이건 인수인계 노트에서 말한 "Firestore 복합 인덱스 추가 필요" 항목과 같은 작업이에요.
+
+---
+
+## 🚀 배포 / 로컬 테스트
+
+### 로컬 테스트
+```bash
+cd cloudrun-dashboard
+npm install
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+export FIREBASE_PROJECT_ID="m-smart-90148"
+npm start
+# http://localhost:8080 접속
 ```
 
-이렇게 바꾸면:
-- `EXCEL_COLLECTION_BY_CENTER` 매핑 테이블 불필요
-- 신규 센터 추가 시 **코드 수정/재배포 없이** Firestore에 문서만 넣으면 끝
-- `inspection_logs`와 동일한 패턴으로 일관성 향상
+### Cloud Run 배포
+```bash
+gcloud config set project m-smart-90148
 
-이 변경은 기존 `MaxerveUlsan_Excel` 데이터를 마이그레이션해야 하므로,
-**센터명이 확정되고 본격 확장할 시점**에 진행하는 것을 권장합니다.
+gcloud run deploy facility-dashboard \
+  --source . \
+  --region asia-northeast3 \
+  --allow-unauthenticated \
+  --min-instances=1 \
+  --max-instances=3 \
+  --set-env-vars FIREBASE_PROJECT_ID=m-smart-90148
+```
+- `--min-instances=1`: 인스턴스를 항상 1개 켜둬서 첫 접속이 느려지는 콜드스타트를 방지
+- `--max-instances=3`: 너무 많이 늘어나서 캐시가 여기저기 흩어지는 걸 방지
 
-## 트래픽 대응 (50개소 × 100명)
+### 권한 확인
+Cloud Run 서비스 계정에 Firestore 읽기 권한(`roles/datastore.user`)이 있어야 해요.
+```bash
+gcloud projects add-iam-policy-binding m-smart-90148 \
+  --member="serviceAccount:<CLOUD_RUN_SERVICE_ACCOUNT>" \
+  --role="roles/datastore.user"
+```
 
-현재 center별 5분 캐시로 Firestore 읽기를 최대 50번/5분 수준으로 유지합니다.
-배포 명령어에 `--min-instances=1 --max-instances=3`을 적용하면:
-- **min=1**: 항상 1개 인스턴스 유지 → 콜드스타트(모래시계 커서) 방지
-- **max=3**: 최대 3개로 스케일 아웃 제한 → 인스턴스별 캐시 분산 최소화
+---
 
-트래픽이 더 늘어나면 Google Cloud Memorystore(Redis)로 공유 캐시를 구성하면
-인스턴스가 몇 개든 캐시를 공유할 수 있습니다.
+## 🛠️ 기술 스택
+
+| 분류 | 내용 |
+|---|---|
+| 백엔드 | Node.js + Express |
+| 프론트엔드 | 순수 HTML/JS + Chart.js (차트), chartjs-plugin-datalabels |
+| 데이터베이스 | Google Cloud Firestore |
+| 캐싱 | 인스턴스 메모리 캐시 (Map, 5분 TTL) |
+| 배포 | Docker + Cloud Run |
+
+---
+
+## ❓ 더 알아야 할 것들 (확인 필요)
+
+- [ ] GitHub 레포 주소
+- [ ] `public/assets/logo.jpg` 로고 파일이 실제로 들어있는지 (없어도 나머지는 동작하지만 로고만 안 보임)
+- [ ] 위 "Firestore 복합 인덱스" 작업이 실제로 적용됐는지 (인수인계 노트의 미완료 항목과 동일)
+- [ ] 50개소 확장 시 `Maxerve_Excel` 컬렉션 구조를 더 손볼 계획이 있는지 (현재도 이미 단일 컬렉션 + `center_name` 구조로 되어 있어 보임 — 추가 변경이 필요한지 확인)
+- [ ] Cloud Run 인스턴스 메모리/CPU 설정값
+
+> 위 항목은 정보를 알려주시면 채워 넣을게요!
