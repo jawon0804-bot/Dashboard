@@ -491,16 +491,17 @@ app.get("/api/fidlocations", async (req, res) => {
 });
 
 // ── /api/centers ───────────────────────────────────────────────
-// [신규] Master 계정용 센터 목록. center_configs 컬렉션의 문서 ID들이
-// 곧 센터명이므로 그대로 반환한다. 5분 캐시 재사용.
+// [신규] Master 계정용 센터 목록.
+// settings/all_centers 문서의 centers 배열 필드에서 읽는다.
+// (M-Event 대시보드와 동일한 소스 — 신규 센터 추가 시 이 배열에도 반드시 추가할 것)
 app.get("/api/centers", async (req, res) => {
   const cacheKey = "centers:list";
   const cached = getCache(cacheKey);
   if (cached) return res.json({ ok: true, centers: cached });
 
   try {
-    const snap = await db.collection("center_configs").get();
-    const centers = snap.docs.map((d) => d.id).sort((a, b) => a.localeCompare(b));
+    const doc = await db.collection("settings").doc("all_centers").get();
+    const centers = doc.exists ? (doc.data().centers || []).slice().sort((a, b) => a.localeCompare(b)) : [];
     setCache(cacheKey, centers);
     return res.json({ ok: true, centers });
   } catch (e) {
