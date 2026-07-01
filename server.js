@@ -67,6 +67,35 @@ function extractCleanFileName(url, uploadedAt) {
 }
 
 // ---------------------------------------------------------------------------
+// [신규] GCS 버킷 핸들 + storage_path -> 다운로드 URL 즉석 발급
+// Firestore 문서에 storage_path(신규, 만료 없는 경로)가 있으면 요청 시점마다
+// 짧은 유효기간의 signed URL을 새로 발급한다 (응답 즉시 소비되므로 1시간이면 충분).
+// storage_path가 없는 예전 문서는 저장돼 있던 file_url(만료됐을 수 있음)로 폴백.
+// ---------------------------------------------------------------------------
+const STORAGE_BUCKET_NAME = "m-smart-90148.firebasestorage.app";
+let _bucket = null;
+function getBucket() {
+  if (!_bucket) _bucket = admin.storage().bucket(STORAGE_BUCKET_NAME);
+  return _bucket;
+}
+
+async function resolveFileUrl(data) {
+  if (data.storage_path) {
+    try {
+      const [url] = await getBucket().file(data.storage_path).getSignedUrl({
+        action: "read",
+        expires: Date.now() + 60 * 60 * 1000, // 1시간
+      });
+      return url;
+    } catch (e) {
+      console.error(`signed url 생성 실패 (${data.storage_path}):`, e.message);
+      return data.file_url || ""; // 서명 실패 시에만 예전 필드로 폴백
+    }
+  }
+  return data.file_url || "";
+}
+
+// ---------------------------------------------------------------------------
 // 센터(또는 Master)에 해당하는 엑셀 데이터를 Maxerve_Excel 단일 컬렉션에서 조회해
 // { excelMap, excelListByFid } 형태로 가공해 반환하는 공통 함수.
 // Master면 centerName 필터 없이 전체 조회, 일반 센터면 centerName으로 필터링.
@@ -85,9 +114,11 @@ async function buildExcelData(center) {
 
   const excelSnap = await excelQuery.get();
 
+  // 1단계: 문서 순회하며 유효한 것만 골라둔다 (file_url 또는 storage_path 둘 중 하나만 있어도 통과)
+  const rawDocs = [];
   excelSnap.forEach((doc) => {
     const data = doc.data();
-    if (!data.facility_id || !data.file_url) return;
+    if (!data.facility_id || (!data.file_url && !data.storage_path)) return;
 
     let fidList = [];
     if (Array.isArray(data.facility_id)) {
@@ -98,22 +129,28 @@ async function buildExcelData(center) {
       fidList = [String(data.facility_id)];
     }
     fidList.sort((a, b) => a.localeCompare(b));
-
     if (fidList.length === 0) return;
 
-    const primaryFid = fidList[0];
-    const uploadedAt =
-      data.uploaded_at || data.createdAt || data.datetime || (doc.createTime ? doc.createTime.toDate().toISOString() : "");
-
-    const cleanFid = String(primaryFid).trim();
-    if (!excelListByFid[cleanFid]) excelListByFid[cleanFid] = [];
-    excelListByFid[cleanFid].push({
-      docId: doc.id,
-      file_url: data.file_url,
-      fileName: data.fileName || data.file_name || extractCleanFileName(data.file_url, uploadedAt),
-      uploadedAt,
-    });
+    rawDocs.push({ doc, data, primaryFid: fidList[0] });
   });
+
+  // 2단계: 다운로드 URL을 병렬로 즉석 발급 (storage_path 있으면 새로, 없으면 file_url 그대로)
+  await Promise.all(
+    rawDocs.map(async ({ doc, data, primaryFid }) => {
+      const uploadedAt =
+        data.uploaded_at || data.createdAt || data.datetime || (doc.createTime ? doc.createTime.toDate().toISOString() : "");
+      const resolvedUrl = await resolveFileUrl(data);
+      const cleanFid = String(primaryFid).trim();
+
+      if (!excelListByFid[cleanFid]) excelListByFid[cleanFid] = [];
+      excelListByFid[cleanFid].push({
+        docId: doc.id,
+        file_url: resolvedUrl,
+        fileName: data.fileName || data.file_name || extractCleanFileName(resolvedUrl, uploadedAt),
+        uploadedAt,
+      });
+    })
+  );
 
   // 설비별 최신순 정렬
   Object.keys(excelListByFid).forEach((fid) => {
