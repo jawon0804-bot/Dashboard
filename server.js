@@ -490,6 +490,25 @@ app.get("/api/fidlocations", async (req, res) => {
   }
 });
 
+// ── /api/centers ───────────────────────────────────────────────
+// [신규] Master 계정용 센터 목록. center_configs 컬렉션의 문서 ID들이
+// 곧 센터명이므로 그대로 반환한다. 5분 캐시 재사용.
+app.get("/api/centers", async (req, res) => {
+  const cacheKey = "centers:list";
+  const cached = getCache(cacheKey);
+  if (cached) return res.json({ ok: true, centers: cached });
+
+  try {
+    const snap = await db.collection("center_configs").get();
+    const centers = snap.docs.map((d) => d.id).sort((a, b) => a.localeCompare(b));
+    setCache(cacheKey, centers);
+    return res.json({ ok: true, centers });
+  } catch (e) {
+    console.error("센터 목록 조회 오류:", e);
+    return res.status(500).json({ ok: false, message: "센터 목록 조회 중 오류가 발생했습니다." });
+  }
+});
+
 app.get("/healthz", (req, res) => res.send("ok"));
 
 const PORT = process.env.PORT || 8080;
