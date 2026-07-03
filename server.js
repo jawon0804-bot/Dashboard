@@ -3,14 +3,36 @@
 // - Firestore 읽기를 이 서버 한 곳으로 집중시켜 클라이언트 직접 호출을 제거
 // - center(현장) 단위로 5분 캐시를 두어 동일 데이터 반복 조회를 방지
 // - 로그인(이름+전화번호) 인증도 서버에서 처리
+//
+// [2026-07 보안/안정성 패치]
+//  1. HMAC 서명 세션 토큰 도입: /api/dashboard, /api/excel-files, /api/centers,
+//     /api/dashboard/refresh 는 로그인 후 발급된 토큰이 있어야 접근 가능
+//  2. 비-Master 계정은 자기 센터 데이터만 조회 가능 (center 파라미터 위조 차단)
+//  3. 캐시 스탬피드 방지 (동시 요청 시 Firestore 조회 1회로 합침)
+//  4. 조회 실패 시 빈 결과를 캐시하지 않음 (다음 요청이 재시도)
+//  5. 60일 룩백 날짜 KST 기준으로 보정
+//  6. 로그인 시도 IP당 횟수 제한 (brute-force 방어)
+//
+// ★ 주의: /api/fidlocations 는 이벤트(M-Event) 프로젝트가 공유 사용 중이므로
+//   응답 형식({ok, fidLocations, sheetLabels})과 무인증 접근을 그대로 유지한다.
 
 const express = require("express");
 const cors = require("cors");
+const crypto = require("crypto");
 const admin = require("firebase-admin");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// 응답 압축 (선택 의존성) — `npm install compression` 후 자동 활성화.
+// 미설치 상태여도 서버는 정상 기동한다.
+try {
+  app.use(require("compression")());
+} catch (e) {
+  console.warn("[안내] compression 미설치 — `npm install compression` 시 응답 전송량 절감 가능");
+}
+
 app.use(express.static("public")); // 프론트(index.html 등) 정적 서빙
 
 // ---------------------------------------------------------------------------
@@ -23,6 +45,107 @@ admin.initializeApp({
   projectId: process.env.FIREBASE_PROJECT_ID || "m-smart-90148",
 });
 const db = admin.firestore();
+
+// ---------------------------------------------------------------------------
+// [신규] 세션 토큰 (HMAC-SHA256 서명)
+// - 로그인 성공 시 { center, exp } 를 서명해 발급
+// - 이후 API 호출은 Authorization: Bearer <token> 헤더 필수
+// - Cloud Run 환경변수 SESSION_SECRET 을 반드시 설정할 것.
+//   미설정 시 임시 난수 키로 기동하지만, 인스턴스 재시작/스케일아웃 때마다
+//   기존 세션이 전부 무효화되므로 운영 환경에서는 꼭 고정 키를 지정한다.
+//   예) gcloud run deploy ... --set-env-vars SESSION_SECRET=$(openssl rand -hex 32)
+// ---------------------------------------------------------------------------
+const SESSION_SECRET =
+  process.env.SESSION_SECRET ||
+  (() => {
+    console.warn(
+      "[경고] SESSION_SECRET 환경변수가 없어 임시 난수 키로 기동합니다. " +
+        "인스턴스 재시작 시 전체 재로그인이 필요하니 Cloud Run 환경변수로 설정하세요."
+    );
+    return crypto.randomBytes(32).toString("hex");
+  })();
+
+const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12시간
+
+function signSession(center) {
+  const payload = Buffer.from(
+    JSON.stringify({ center, exp: Date.now() + TOKEN_TTL_MS })
+  ).toString("base64url");
+  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  return `${payload}.${sig}`;
+}
+
+function verifySession(token) {
+  if (!token || typeof token !== "string") return null;
+  const dot = token.lastIndexOf(".");
+  if (dot < 0) return null;
+  const payload = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!data.center || typeof data.exp !== "number" || Date.now() > data.exp) return null;
+    return data; // { center, exp }
+  } catch (e) {
+    return null;
+  }
+}
+
+// 인증 미들웨어: 토큰 검증 후 req.authCenter 에 로그인 신원(센터)을 심는다.
+function authMiddleware(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const session = verifySession(token);
+  if (!session) {
+    return res.status(401).json({ ok: false, message: "세션이 만료되었거나 유효하지 않습니다. 다시 로그인해주세요." });
+  }
+  req.authCenter = session.center;
+  next();
+}
+
+// 조회 대상 센터 결정: Master 로그인만 임의의 center 파라미터 허용,
+// 일반 계정은 파라미터를 무시하고 자기 센터로 강제한다.
+function resolveCenter(req) {
+  const requested = (req.query.center || "").toString().trim();
+  if (req.authCenter === MASTER_CENTER_NAME) {
+    return requested || MASTER_CENTER_NAME;
+  }
+  return req.authCenter;
+}
+
+// ---------------------------------------------------------------------------
+// [신규] 로그인 brute-force 방어 (IP당 10분에 20회)
+// ---------------------------------------------------------------------------
+const loginAttempts = new Map(); // ip -> { count, resetAt }
+const LOGIN_WINDOW_MS = 10 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 20;
+
+function loginRateLimit(req, res, next) {
+  const ip =
+    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "unknown";
+  const now = Date.now();
+
+  // 맵이 비대해지지 않도록 만료 항목 정리
+  if (loginAttempts.size > 1000) {
+    for (const [k, v] of loginAttempts) {
+      if (now > v.resetAt) loginAttempts.delete(k);
+    }
+  }
+
+  let rec = loginAttempts.get(ip);
+  if (!rec || now > rec.resetAt) {
+    rec = { count: 0, resetAt: now + LOGIN_WINDOW_MS };
+    loginAttempts.set(ip, rec);
+  }
+  rec.count++;
+  if (rec.count > LOGIN_MAX_ATTEMPTS) {
+    return res.status(429).json({ ok: false, message: "로그인 시도 횟수를 초과했습니다. 잠시 후 다시 시도해주세요." });
+  }
+  next();
+}
 
 // ---------------------------------------------------------------------------
 // 엑셀 보고서 단일 컬렉션
@@ -38,10 +161,12 @@ const MASTER_CENTER_NAME = "Master";
 // inspection_logs(점검기록)는 최근 60일치만 조회합니다. (엑셀 보고서는 전체 유지)
 const INSPECTION_LOGS_LOOKBACK_DAYS = 60;
 
+// [수정] inspection_logs.datetime 은 KST 기준 문자열이므로 룩백 경계일도
+// KST 기준으로 계산한다. (기존 UTC 기준 계산은 최대 9시간 어긋남)
 function getLookbackDateString(days) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().substring(0, 10); // "YYYY-MM-DD"
+  const kstNow = new Date(Date.now() + 9 * 60 * 60 * 1000);
+  kstNow.setUTCDate(kstNow.getUTCDate() - days);
+  return kstNow.toISOString().substring(0, 10); // "YYYY-MM-DD"
 }
 
 // URL에서 사람이 읽기 좋은 파일명을 뽑아냅니다.
@@ -54,7 +179,7 @@ function extractCleanFileName(url, uploadedAt) {
     const decoded = decodeURIComponent(withoutQuery);
     const lastSegment = decoded.split("/").pop();
 
-    // 너무 길거나(40자 이상) 확장자가 없으면 알아보기 힘든 토큰일 가능성이 높음 -> 기본 이름 사용
+    // 60자 초과이거나 확장자가 없으면 알아보기 힘든 토큰일 가능성이 높음 -> 기본 이름 사용
     const hasReadableExtension = /\.(xlsx|xls|csv|pdf)$/i.test(lastSegment);
     if (lastSegment && lastSegment.length <= 60 && hasReadableExtension) {
       return lastSegment;
@@ -67,7 +192,7 @@ function extractCleanFileName(url, uploadedAt) {
 }
 
 // ---------------------------------------------------------------------------
-// [신규] GCS 버킷 핸들 + storage_path -> 다운로드 URL 즉석 발급
+// GCS 버킷 핸들 + storage_path -> 다운로드 URL 즉석 발급
 // Firestore 문서에 storage_path(신규, 만료 없는 경로)가 있으면 요청 시점마다
 // 짧은 유효기간의 signed URL을 새로 발급한다 (응답 즉시 소비되므로 1시간이면 충분).
 // storage_path가 없는 예전 문서는 저장돼 있던 file_url(만료됐을 수 있음)로 폴백.
@@ -192,96 +317,131 @@ function setCache(key, data) {
 }
 
 // ---------------------------------------------------------------------------
+// [신규] 캐시 스탬피드 방지 헬퍼
+// 캐시 만료 직후 동일 키로 요청이 동시에 몰려도 builder(Firestore 조회 +
+// signed URL 대량 발급)는 딱 1번만 실행되고, 나머지 요청은 그 Promise를 공유한다.
+// builder가 throw하면 아무것도 캐시하지 않으므로 다음 요청이 자연스럽게 재시도한다.
+// ---------------------------------------------------------------------------
+const inflight = new Map(); // key -> Promise
+
+async function getOrBuild(key, builder) {
+  const cached = getCache(key);
+  if (cached) return cached;
+  if (inflight.has(key)) return inflight.get(key);
+
+  const p = (async () => {
+    try {
+      const data = await builder();
+      setCache(key, data);
+      return data;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+  inflight.set(key, p);
+  return p;
+}
+
+// ---------------------------------------------------------------------------
 // 설비ID -> 위치명 매핑 (center_configs/{center}/facilities 에서 동적으로 조회)
 // 센터별 서브컬렉션: center_configs/{center}/facilities/{fid}
 //   fid_name: 위치명, category: 카테고리, center_name: 센터명
 // 결과는 메모리에 캐시 (CACHE_TTL_MS 동일 적용)
+// [수정] 조회 실패 시 빈 객체를 "캐시하지 않고" 반환한다.
+//        (기존에는 일시 오류 한 번에 빈 매핑이 5분간 굳어버렸음)
 // ---------------------------------------------------------------------------
-async function getFidLocations(center) {
-  const cacheKey = `fidLocations:${center}`;
-  const cached = getCache(cacheKey);
-  if (cached) return cached;
-
+async function fetchFidLocationsFromDb(center) {
   const locations = {};
-  try {
-    const isMaster = center === MASTER_CENTER_NAME;
+  const isMaster = center === MASTER_CENTER_NAME;
 
-    if (isMaster) {
-      // Master: center_configs 전체 센터 서브컬렉션 병렬 조회
-      const centersSnap = await db.collection("center_configs").get();
-      await Promise.all(centersSnap.docs.map(async (centerDoc) => {
+  if (isMaster) {
+    // Master: center_configs 전체 센터 서브컬렉션 병렬 조회
+    const centersSnap = await db.collection("center_configs").get();
+    await Promise.all(
+      centersSnap.docs.map(async (centerDoc) => {
         const snap = await centerDoc.ref.collection("facilities").get();
         snap.forEach((doc) => {
           locations[doc.id] = doc.data().fid_name || doc.id;
         });
-      }));
-    } else {
-      const snap = await db
-        .collection("center_configs")
-        .doc(center)
-        .collection("facilities")
-        .get();
-      snap.forEach((doc) => {
-        locations[doc.id] = doc.data().fid_name || doc.id;
-      });
-    }
+      })
+    );
+  } else {
+    const snap = await db
+      .collection("center_configs")
+      .doc(center)
+      .collection("facilities")
+      .get();
+    snap.forEach((doc) => {
+      locations[doc.id] = doc.data().fid_name || doc.id;
+    });
+  }
+  return locations;
+}
+
+async function getFidLocations(center) {
+  try {
+    return await getOrBuild(`fidLocations:${center}`, () => fetchFidLocationsFromDb(center));
   } catch (e) {
     console.error("center_configs/facilities 조회 오류:", e);
+    return {}; // 캐시 없이 즉시 반환 → 다음 요청이 재시도
   }
-
-  setCache(cacheKey, locations);
-  return locations;
 }
 
 // ---------------------------------------------------------------------------
 // fid → sheet_label 역매핑 함수
 // center_configs/{center}/inspections 에서 fids 배열 읽어서 fid → sheet_label 매핑
-async function getSheetLabels(center) {
-  const cacheKey = `sheetLabels:${center}`;
-  const cached = getCache(cacheKey);
-  if (cached) return cached;
-
+// [수정] getFidLocations와 동일하게 실패 시 캐시하지 않음
+// ---------------------------------------------------------------------------
+async function fetchSheetLabelsFromDb(center) {
   const labels = {};
-  try {
-    const isMaster = center === MASTER_CENTER_NAME;
+  const isMaster = center === MASTER_CENTER_NAME;
 
-    if (isMaster) {
-      const centersSnap = await db.collection("center_configs").get();
-      await Promise.all(centersSnap.docs.map(async (centerDoc) => {
-        const snap = await centerDoc.ref.collection("inspections").get();
-        snap.forEach((doc) => {
-          const data = doc.data();
-          const label = data.sheet_label || doc.id;
-          const fids = Array.isArray(data.fids) ? data.fids : [];
-          fids.forEach(fid => { labels[String(fid).trim()] = label; });
-        });
-      }));
-    } else {
-      const snap = await db
-        .collection("center_configs")
-        .doc(center)
-        .collection("inspections")
-        .get();
-      snap.forEach((doc) => {
-        const data = doc.data();
-        const label = data.sheet_label || doc.id;
-        const fids = Array.isArray(data.fids) ? data.fids : [];
-        fids.forEach(fid => { labels[String(fid).trim()] = label; });
+  const applySnap = (snap) => {
+    snap.forEach((doc) => {
+      const data = doc.data();
+      const label = data.sheet_label || doc.id;
+      const fids = Array.isArray(data.fids) ? data.fids : [];
+      fids.forEach((fid) => {
+        labels[String(fid).trim()] = label;
       });
-    }
-  } catch(e) {
-    console.error("sheetLabels 조회 오류:", e);
-  }
+    });
+  };
 
-  setCache(cacheKey, labels);
+  if (isMaster) {
+    const centersSnap = await db.collection("center_configs").get();
+    await Promise.all(
+      centersSnap.docs.map(async (centerDoc) => {
+        const snap = await centerDoc.ref.collection("inspections").get();
+        applySnap(snap);
+      })
+    );
+  } else {
+    const snap = await db
+      .collection("center_configs")
+      .doc(center)
+      .collection("inspections")
+      .get();
+    applySnap(snap);
+  }
   return labels;
+}
+
+async function getSheetLabels(center) {
+  try {
+    return await getOrBuild(`sheetLabels:${center}`, () => fetchSheetLabelsFromDb(center));
+  } catch (e) {
+    console.error("sheetLabels 조회 오류:", e);
+    return {};
+  }
 }
 
 // ---------------------------------------------------------------------------
 // POST /api/login
 // 기존 클라이언트의 UserDB 조회(이름+전화번호) 로직을 서버로 이전
+// [수정] 성공 시 세션 토큰 발급, 실패 사유(미등록/비활성) 메시지 통일,
+//        IP당 시도 횟수 제한
 // ---------------------------------------------------------------------------
-app.post("/api/login", async (req, res) => {
+app.post("/api/login", loginRateLimit, async (req, res) => {
   try {
     const { name, phone } = req.body || {};
     if (!name || !phone) {
@@ -294,19 +454,20 @@ app.post("/api/login", async (req, res) => {
       .where("phone", "==", phone)
       .get();
 
-    if (snapshot.empty) {
-      return res.status(401).json({ ok: false, message: "인증 실패: 등록되지 않은 사용자이거나 정보가 일치하지 않습니다." });
+    // [수정] "미등록"과 "비활성 계정" 응답을 통일해 계정 존재 여부 노출 방지.
+    // active 필드가 명시적으로 true인 계정만 로그인 허용
+    // (Firebase 콘솔에서 active: true/false로 관리)
+    if (snapshot.empty || snapshot.docs[0].data().active !== true) {
+      return res.status(401).json({
+        ok: false,
+        message: "인증 실패: 정보가 일치하지 않거나 접근이 제한된 계정입니다. 관리자에게 문의하세요.",
+      });
     }
 
     const userData = snapshot.docs[0].data();
+    const center = userData.center_name || "";
 
-    // active 필드가 명시적으로 true인 계정만 로그인 허용
-    // false이거나 필드가 없으면 차단 (Firebase 콘솔에서 active: true/false로 관리)
-    if (userData.active !== true) {
-      return res.status(403).json({ ok: false, message: "접근이 제한된 계정입니다. 관리자에게 문의하세요." });
-    }
-
-    return res.json({ ok: true, center: userData.center_name || "" });
+    return res.json({ ok: true, center, token: signSession(center) });
   } catch (err) {
     console.error("로그인 처리 오류:", err);
     return res.status(500).json({ ok: false, message: "서버 연결에 문제가 발생했습니다." });
@@ -314,14 +475,15 @@ app.post("/api/login", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/dashboard?center=XXX
-// 기존 loadDashboardData()의 Firestore 조회 + 가공 로직을 서버로 이전
+// GET /api/dashboard?center=XXX   [인증 필수]
 // center 단위로 5분 캐시 적용 → 동일 현장에서 새로고침을 반복해도
 // Firestore 실제 읽기는 5분에 한 번만 발생
+// [수정] 비-Master 계정은 center 파라미터를 무시하고 자기 센터로 강제,
+//        캐시 스탬피드 방지, records에서 미사용 file_url 필드 제거
 // ---------------------------------------------------------------------------
-app.get("/api/dashboard", async (req, res) => {
+app.get("/api/dashboard", authMiddleware, async (req, res) => {
   try {
-    const center = (req.query.center || "").toString().trim();
+    const center = resolveCenter(req);
     if (!center) {
       return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
     }
@@ -332,60 +494,61 @@ app.get("/api/dashboard", async (req, res) => {
       return res.json({ ok: true, cached: true, ...cached });
     }
 
-    const isMaster = center === MASTER_CENTER_NAME;
-    const lookbackDate = getLookbackDateString(INSPECTION_LOGS_LOOKBACK_DAYS);
+    const payload = await getOrBuild(cacheKey, async () => {
+      const isMaster = center === MASTER_CENTER_NAME;
+      const lookbackDate = getLookbackDateString(INSPECTION_LOGS_LOOKBACK_DAYS);
 
-    // inspection_logs: 최근 60일치만 조회 (datetime은 ISO 문자열이라 사전식 비교 = 시간순 비교와 동일)
-    // Master는 centerName 필터 없이 전체 센터를 60일 리밋만 걸어서 조회
-    const logsQuery = isMaster
-      ? db.collection("inspection_logs").where("datetime", ">=", lookbackDate)
-      : db.collection("inspection_logs").where("center_name", "==", center).where("datetime", ">=", lookbackDate);
+      // inspection_logs: 최근 60일치만 조회 (datetime은 ISO 문자열이라 사전식 비교 = 시간순 비교와 동일)
+      // Master는 centerName 필터 없이 전체 센터를 60일 리밋만 걸어서 조회
+      const logsQuery = isMaster
+        ? db.collection("inspection_logs").where("datetime", ">=", lookbackDate)
+        : db
+            .collection("inspection_logs")
+            .where("center_name", "==", center)
+            .where("datetime", ">=", lookbackDate);
 
-    // 엑셀 보고서: 리밋 없이 전체. Master는 등록된 모든 센터 컬렉션을 병렬 조회 후 합산
-    const [logsSnap, { excelMap, excelListByFid }, fidLocations] = await Promise.all([
-      logsQuery.get(),
-      buildExcelData(center),
-      getFidLocations(center),
-    ]);
+      const [logsSnap, { excelMap, excelListByFid }, fidLocations] = await Promise.all([
+        logsQuery.get(),
+        buildExcelData(center),
+        getFidLocations(center),
+      ]);
 
-    // 점검 기록 가공
-    const records = [];
-    logsSnap.forEach((doc) => {
-      const data = doc.data();
-      const fids = Array.isArray(data.facility_id) ? data.facility_id : [data.facility_id || "알수없음"];
+      // 점검 기록 가공
+      // [수정] file_url 필드는 클라이언트에서 사용하지 않아 제거 (3번 뷰 아이콘은
+      // excelMap[fid]만 사용). 레코드 수천 건일 때 페이로드가 눈에 띄게 줄어든다.
+      const records = [];
+      logsSnap.forEach((doc) => {
+        const data = doc.data();
+        const fids = Array.isArray(data.facility_id) ? data.facility_id : [data.facility_id || "알수없음"];
 
-      const firstFid = fids[0] ? String(fids[0]).trim() : "";
-      const linkForThisRecord = excelMap[firstFid] || "";
-
-      fids.forEach((fid, index) => {
-        const cleanFid = fid ? String(fid).trim() : "알수없음";
-        records.push({
-          date: data.datetime ? data.datetime.substring(0, 10) : "",
-          inspector: data.worker || "미지정",
-          fid: cleanFid,
-          file_url: index === 0 ? linkForThisRecord : "",
+        fids.forEach((fid) => {
+          const cleanFid = fid ? String(fid).trim() : "알수없음";
+          records.push({
+            date: data.datetime ? data.datetime.substring(0, 10) : "",
+            inspector: data.worker || "미지정",
+            fid: cleanFid,
+          });
         });
       });
+
+      const excelCountByFid = {};
+      Object.keys(excelListByFid).forEach((fid) => {
+        excelCountByFid[fid] = excelListByFid[fid].length;
+      });
+
+      // 설비별 엑셀 전체 목록은 /api/excel-files 페이지네이션 조회에서 재사용하도록
+      // 별도 캐시 키로도 저장해둡니다 (동일 5분 TTL).
+      setCache(`excelList:${center}`, excelListByFid);
+
+      return {
+        center,
+        records,
+        excelMap,
+        excelCountByFid,
+        fidLocations,
+        generatedAt: new Date().toISOString(),
+      };
     });
-
-    const excelCountByFid = {};
-    Object.keys(excelListByFid).forEach((fid) => {
-      excelCountByFid[fid] = excelListByFid[fid].length;
-    });
-
-    const payload = {
-      center,
-      records,
-      excelMap,
-      excelCountByFid,
-      fidLocations,
-      generatedAt: new Date().toISOString(),
-    };
-
-    setCache(cacheKey, payload);
-    // 설비별 엑셀 전체 목록은 /api/excel-files 페이지네이션 조회에서 재사용하도록
-    // 별도 캐시 키로도 저장해둡니다 (동일 5분 TTL).
-    setCache(`excelList:${center}`, excelListByFid);
 
     return res.json({ ok: true, cached: false, ...payload });
   } catch (err) {
@@ -395,16 +558,16 @@ app.get("/api/dashboard", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/excel-files?center=XXX&fid=기계_01&page=1&pageSize=15
+// GET /api/excel-files?center=XXX&fid=기계_01&page=1&pageSize=15   [인증 필수]
 // - fid가 있으면: 해당 설비ID의 엑셀 보고서 전체 목록을 최신순으로 반환
 // - fid가 없으면: 센터(또는 Master)의 "모든" 설비 엑셀 보고서를 합쳐 최신순으로 반환
 //   (3번 뷰 헤더 "보고서" 클릭 시 사용 — 전체 설비 통합 목록)
 // /api/dashboard와 동일한 5분 캐시(excelList:{center})를 재사용하므로
 // 팝업을 여러 번 열어도 Firestore 추가 읽기가 거의 발생하지 않습니다.
 // ---------------------------------------------------------------------------
-app.get("/api/excel-files", async (req, res) => {
+app.get("/api/excel-files", authMiddleware, async (req, res) => {
   try {
-    const center = (req.query.center || "").toString().trim();
+    const center = resolveCenter(req);
     const fid = (req.query.fid || "").toString().trim(); // 비어있으면 "전체" 모드
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 15));
@@ -413,15 +576,12 @@ app.get("/api/excel-files", async (req, res) => {
       return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
     }
 
-    const listCacheKey = `excelList:${center}`;
-    let excelListByFid = getCache(listCacheKey);
-
-    if (!excelListByFid) {
-      // 캐시가 없으면(만료 또는 /api/dashboard를 아직 호출 안 한 경우) 직접 조회
+    // 캐시가 없으면(만료 또는 /api/dashboard를 아직 호출 안 한 경우) 직접 조회.
+    // getOrBuild가 동시 요청을 1회 조회로 합쳐준다.
+    const excelListByFid = await getOrBuild(`excelList:${center}`, async () => {
       const built = await buildExcelData(center);
-      excelListByFid = built.excelListByFid;
-      setCache(listCacheKey, excelListByFid);
-    }
+      return built.excelListByFid;
+    });
 
     let fullList;
     if (fid) {
@@ -462,19 +622,27 @@ app.get("/api/excel-files", async (req, res) => {
 });
 
 // 캐시 강제 무효화 (관리/디버깅용 - 필요시 버튼에 연결 가능)
-app.post("/api/dashboard/refresh", (req, res) => {
-  const center = (req.query.center || "").toString().trim();
+// [수정] 인증 필수 + 비-Master는 자기 센터 캐시만 무효화 가능
+//        (무인증 상태로 두면 외부에서 캐시를 계속 비워 Firestore 읽기 비용을
+//         강제로 발생시킬 수 있음)
+app.post("/api/dashboard/refresh", authMiddleware, (req, res) => {
+  const isMaster = req.authCenter === MASTER_CENTER_NAME;
+  const requested = (req.query.center || "").toString().trim();
+  const center = isMaster ? requested : req.authCenter;
+
   if (center) {
     cache.delete(`dashboard:${center}`);
     cache.delete(`excelList:${center}`);
-  } else {
-    cache.clear();
+  } else if (isMaster) {
+    cache.clear(); // 전체 캐시 비우기는 Master만 허용
   }
   res.json({ ok: true });
 });
 
 // ── /api/fidlocations ──────────────────────────────────────────
 // fid → fid_name 매핑 반환 (m-event 이벤트트래커에서 사용)
+// ★ 이벤트(M-Event) 프로젝트가 공유 사용 중 — 응답 형식과 무인증 접근을
+//   변경하지 말 것. (변경 시 이벤트 프로젝트도 함께 배포해야 함)
 app.get("/api/fidlocations", async (req, res) => {
   const center = (req.query.center || "").toString().trim();
   if (!center) return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
@@ -484,17 +652,21 @@ app.get("/api/fidlocations", async (req, res) => {
       getSheetLabels(center),
     ]);
     return res.json({ ok: true, fidLocations: locations, sheetLabels });
-  } catch(e) {
+  } catch (e) {
     console.error("fidlocations 오류:", e);
     return res.status(500).json({ ok: false, message: "조회 중 오류가 발생했습니다." });
   }
 });
 
 // ── /api/centers ───────────────────────────────────────────────
-// [신규] Master 계정용 센터 목록.
+// Master 계정용 센터 목록.   [인증 필수 — Master만 접근 가능]
 // settings/all_centers 문서의 centers 배열 필드에서 읽는다.
 // (M-Event 대시보드와 동일한 소스 — 신규 센터 추가 시 이 배열에도 반드시 추가할 것)
-app.get("/api/centers", async (req, res) => {
+app.get("/api/centers", authMiddleware, async (req, res) => {
+  if (req.authCenter !== MASTER_CENTER_NAME) {
+    return res.status(403).json({ ok: false, message: "권한이 없습니다." });
+  }
+
   const cacheKey = "centers:list";
   const cached = getCache(cacheKey);
   if (cached) return res.json({ ok: true, centers: cached });
