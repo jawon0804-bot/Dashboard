@@ -20,12 +20,10 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const admin = require("firebase-admin");
-const compression = require('compression');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(compression());
 
 // 응답 압축 (선택 의존성) — `npm install compression` 후 자동 활성화.
 // 미설치 상태여도 서버는 정상 기동한다.
@@ -228,24 +226,41 @@ async function resolveFileUrl(data) {
 // Master면 centerName 필터 없이 전체 조회, 일반 센터면 centerName으로 필터링.
 // /api/dashboard와 /api/excel-files(캐시 미스 시) 양쪽에서 재사용합니다.
 // ---------------------------------------------------------------------------
+// [2026-07 버그 수정] Maxerve_Excel 문서의 센터 필드명이 center_name인지
+// centerName인지(혹은 그 외 표기인지) 스키마가 보장되지 않아, where() 서버
+// 필터를 쓰면 필드명이 어긋날 경우 조용히 0건이 반환되는 문제가 있었다
+// (실제로 대시보드 "보고서" 컬럼과 이벤트(M-Event) 엑셀 검색이 동시에
+// 비어 보이는 증상으로 나타남). 후보 필드명을 모두 확인해 매칭한다.
+function extractCenterNameFromDoc(data) {
+  return data.center_name ?? data.centerName ?? data.center ?? "";
+}
+
 async function buildExcelData(center) {
   const excelMap = {};
   const excelListByFid = {};
 
   const isMaster = center === MASTER_CENTER_NAME;
+  const normalize = (s) => String(s ?? "").trim();
+  const targetCenter = normalize(center);
 
-  // Master는 전체 조회, 일반 센터는 centerName 필터링
-  const excelQuery = isMaster
-    ? db.collection(EXCEL_COLLECTION)
-    : db.collection(EXCEL_COLLECTION).where("center_name", "==", center);
+  // [수정] where() 서버 필터 제거 — 필드명 불일치 시 무한히 0건이 반환되는
+  // 문제를 막기 위해 전체 조회 후 아래에서 여러 필드명 후보로 직접 매칭한다.
+  // Maxerve_Excel은 규모가 크지 않고 5분 캐시가 있어 비용 영향은 제한적이다.
+  const excelSnap = await db.collection(EXCEL_COLLECTION).get();
 
-  const excelSnap = await excelQuery.get();
+  let matchedCount = 0;
 
   // 1단계: 문서 순회하며 유효한 것만 골라둔다 (file_url 또는 storage_path 둘 중 하나만 있어도 통과)
   const rawDocs = [];
   excelSnap.forEach((doc) => {
     const data = doc.data();
     if (!data.facility_id || (!data.file_url && !data.storage_path)) return;
+
+    if (!isMaster) {
+      const docCenter = normalize(extractCenterNameFromDoc(data));
+      if (docCenter !== targetCenter) return;
+    }
+    matchedCount++;
 
     let fidList = [];
     if (Array.isArray(data.facility_id)) {
@@ -260,6 +275,18 @@ async function buildExcelData(center) {
 
     rawDocs.push({ doc, data, primaryFid: fidList[0] });
   });
+
+  // [진단 로그] 매칭 0건이면 필드명 문제가 아니라 실제 값 표기가 다른 것일 수
+  // 있으므로, 컬렉션에 실제로 어떤 센터명 값들이 들어있는지 함께 남긴다.
+  // 원인 확인 후 이 블록은 삭제해도 무방하다.
+  if (!isMaster && matchedCount === 0 && excelSnap.size > 0) {
+    const sampleValues = new Set();
+    excelSnap.forEach((doc) => sampleValues.add(normalize(extractCenterNameFromDoc(doc.data()))));
+    console.warn(
+      `[buildExcelData] center="${targetCenter}" 매칭 0건. Maxerve_Excel에 저장된 센터명 후보: ` +
+        JSON.stringify([...sampleValues].filter(Boolean).slice(0, 20))
+    );
+  }
 
   // 2단계: 다운로드 URL을 병렬로 즉석 발급 (storage_path 있으면 새로, 없으면 file_url 그대로)
   await Promise.all(
