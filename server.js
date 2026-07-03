@@ -150,7 +150,7 @@ function loginRateLimit(req, res, next) {
 // ---------------------------------------------------------------------------
 // 엑셀 보고서 단일 컬렉션
 // 센터별로 별도 컬렉션을 쓰던 방식(MaxerveUlsan_Excel 등)에서
-// Maxerve_Excel 하나로 통합하고 centerName 필드로 필터링합니다.
+// Maxerve_Excel 하나로 통합하고 center_name 필드로 필터링합니다.
 // 신규 센터 추가 시 코드 수정/재배포 없이 Firestore에 문서만 넣으면 됩니다.
 // ---------------------------------------------------------------------------
 const EXCEL_COLLECTION = "Maxerve_Excel";
@@ -223,44 +223,32 @@ async function resolveFileUrl(data) {
 // ---------------------------------------------------------------------------
 // 센터(또는 Master)에 해당하는 엑셀 데이터를 Maxerve_Excel 단일 컬렉션에서 조회해
 // { excelMap, excelListByFid } 형태로 가공해 반환하는 공통 함수.
-// Master면 centerName 필터 없이 전체 조회, 일반 센터면 centerName으로 필터링.
+// Master면 center_name 필터 없이 전체 조회, 일반 센터면 center_name으로 필터링.
 // /api/dashboard와 /api/excel-files(캐시 미스 시) 양쪽에서 재사용합니다.
+//
+// [2026-07] Maxerve_Excel 문서의 센터 필드명은 center_name으로 통일하기로
+// 확정됨. 한때 필드명 불일치를 의심해 전체 스캔 + 다중 필드명 매칭으로
+// 바꿨었으나(실제 원인은 IAM 서명 권한 문제로 판명), 다시 표준 where()
+// 서버 필터로 되돌린다 — 매 요청마다 컬렉션 전체를 읽지 않아도 되므로
+// Firestore 읽기 비용과 응답 속도 면에서 더 유리하다.
 // ---------------------------------------------------------------------------
-// [2026-07 버그 수정] Maxerve_Excel 문서의 센터 필드명이 center_name인지
-// centerName인지(혹은 그 외 표기인지) 스키마가 보장되지 않아, where() 서버
-// 필터를 쓰면 필드명이 어긋날 경우 조용히 0건이 반환되는 문제가 있었다
-// (실제로 대시보드 "보고서" 컬럼과 이벤트(M-Event) 엑셀 검색이 동시에
-// 비어 보이는 증상으로 나타남). 후보 필드명을 모두 확인해 매칭한다.
-function extractCenterNameFromDoc(data) {
-  return data.center_name ?? data.centerName ?? data.center ?? "";
-}
-
 async function buildExcelData(center) {
   const excelMap = {};
   const excelListByFid = {};
 
   const isMaster = center === MASTER_CENTER_NAME;
-  const normalize = (s) => String(s ?? "").trim();
-  const targetCenter = normalize(center);
 
-  // [수정] where() 서버 필터 제거 — 필드명 불일치 시 무한히 0건이 반환되는
-  // 문제를 막기 위해 전체 조회 후 아래에서 여러 필드명 후보로 직접 매칭한다.
-  // Maxerve_Excel은 규모가 크지 않고 5분 캐시가 있어 비용 영향은 제한적이다.
-  const excelSnap = await db.collection(EXCEL_COLLECTION).get();
+  const excelQuery = isMaster
+    ? db.collection(EXCEL_COLLECTION)
+    : db.collection(EXCEL_COLLECTION).where("center_name", "==", center);
 
-  let matchedCount = 0;
+  const excelSnap = await excelQuery.get();
 
   // 1단계: 문서 순회하며 유효한 것만 골라둔다 (file_url 또는 storage_path 둘 중 하나만 있어도 통과)
   const rawDocs = [];
   excelSnap.forEach((doc) => {
     const data = doc.data();
     if (!data.facility_id || (!data.file_url && !data.storage_path)) return;
-
-    if (!isMaster) {
-      const docCenter = normalize(extractCenterNameFromDoc(data));
-      if (docCenter !== targetCenter) return;
-    }
-    matchedCount++;
 
     let fidList = [];
     if (Array.isArray(data.facility_id)) {
@@ -275,18 +263,6 @@ async function buildExcelData(center) {
 
     rawDocs.push({ doc, data, primaryFid: fidList[0] });
   });
-
-  // [진단 로그] 매칭 0건이면 필드명 문제가 아니라 실제 값 표기가 다른 것일 수
-  // 있으므로, 컬렉션에 실제로 어떤 센터명 값들이 들어있는지 함께 남긴다.
-  // 원인 확인 후 이 블록은 삭제해도 무방하다.
-  if (!isMaster && matchedCount === 0 && excelSnap.size > 0) {
-    const sampleValues = new Set();
-    excelSnap.forEach((doc) => sampleValues.add(normalize(extractCenterNameFromDoc(doc.data()))));
-    console.warn(
-      `[buildExcelData] center="${targetCenter}" 매칭 0건. Maxerve_Excel에 저장된 센터명 후보: ` +
-        JSON.stringify([...sampleValues].filter(Boolean).slice(0, 20))
-    );
-  }
 
   // 2단계: 다운로드 URL을 병렬로 즉석 발급 (storage_path 있으면 새로, 없으면 file_url 그대로)
   await Promise.all(
@@ -528,7 +504,7 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
       const lookbackDate = getLookbackDateString(INSPECTION_LOGS_LOOKBACK_DAYS);
 
       // inspection_logs: 최근 60일치만 조회 (datetime은 ISO 문자열이라 사전식 비교 = 시간순 비교와 동일)
-      // Master는 centerName 필터 없이 전체 센터를 60일 리밋만 걸어서 조회
+      // Master는 center_name 필터 없이 전체 센터를 60일 리밋만 걸어서 조회
       const logsQuery = isMaster
         ? db.collection("inspection_logs").where("datetime", ">=", lookbackDate)
         : db
