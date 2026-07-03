@@ -20,10 +20,12 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 const admin = require("firebase-admin");
+const compression = require('compression');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(compression());
 
 // 응답 압축 (선택 의존성) — `npm install compression` 후 자동 활성화.
 // 미설치 상태여도 서버는 정상 기동한다.
