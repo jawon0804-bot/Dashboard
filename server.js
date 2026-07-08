@@ -117,40 +117,14 @@ function resolveCenter(req) {
 }
 
 // ---------------------------------------------------------------------------
-// [신규] 로그인 brute-force 방어 (IP당 10분에 20회)
-// ---------------------------------------------------------------------------
-const loginAttempts = new Map(); // ip -> { count, resetAt }
-const LOGIN_WINDOW_MS = 10 * 60 * 1000;
-const LOGIN_MAX_ATTEMPTS = 20;
-
-function loginRateLimit(req, res, next) {
-  const ip =
-    (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || "unknown";
-  const now = Date.now();
-
-  // 맵이 비대해지지 않도록 만료 항목 정리
-  if (loginAttempts.size > 1000) {
-    for (const [k, v] of loginAttempts) {
-      if (now > v.resetAt) loginAttempts.delete(k);
-    }
-  }
-
-  let rec = loginAttempts.get(ip);
-  if (!rec || now > rec.resetAt) {
-    rec = { count: 0, resetAt: now + LOGIN_WINDOW_MS };
-    loginAttempts.set(ip, rec);
-  }
-  rec.count++;
-  if (rec.count > LOGIN_MAX_ATTEMPTS) {
-    return res.status(429).json({ ok: false, message: "로그인 시도 횟수를 초과했습니다. 잠시 후 다시 시도해주세요." });
-  }
-  next();
-}
-
+// [2026-07 변경] 로그인 brute-force 방어는 이제 M-Event의
+// loginWithCredentials Cloud Function이 login_attempts/login_lockouts
+// 컬렉션으로 자체 처리한다. /api/login은 idToken만 받으므로 서버 측
+// IP 레이트리밋(loginRateLimit)은 더 이상 필요 없어 제거했다.
 // ---------------------------------------------------------------------------
 // 엑셀 보고서 단일 컬렉션
 // 센터별로 별도 컬렉션을 쓰던 방식(MaxerveUlsan_Excel 등)에서
-// Maxerve_Excel 하나로 통합하고 center_name 필드로 필터링합니다.
+// Maxerve_Excel 하나로 통합하고 centerName 필드로 필터링합니다.
 // 신규 센터 추가 시 코드 수정/재배포 없이 Firestore에 문서만 넣으면 됩니다.
 // ---------------------------------------------------------------------------
 const EXCEL_COLLECTION = "Maxerve_Excel";
@@ -223,14 +197,8 @@ async function resolveFileUrl(data) {
 // ---------------------------------------------------------------------------
 // 센터(또는 Master)에 해당하는 엑셀 데이터를 Maxerve_Excel 단일 컬렉션에서 조회해
 // { excelMap, excelListByFid } 형태로 가공해 반환하는 공통 함수.
-// Master면 center_name 필터 없이 전체 조회, 일반 센터면 center_name으로 필터링.
+// Master면 centerName 필터 없이 전체 조회, 일반 센터면 centerName으로 필터링.
 // /api/dashboard와 /api/excel-files(캐시 미스 시) 양쪽에서 재사용합니다.
-//
-// [2026-07] Maxerve_Excel 문서의 센터 필드명은 center_name으로 통일하기로
-// 확정됨. 한때 필드명 불일치를 의심해 전체 스캔 + 다중 필드명 매칭으로
-// 바꿨었으나(실제 원인은 IAM 서명 권한 문제로 판명), 다시 표준 where()
-// 서버 필터로 되돌린다 — 매 요청마다 컬렉션 전체를 읽지 않아도 되므로
-// Firestore 읽기 비용과 응답 속도 면에서 더 유리하다.
 // ---------------------------------------------------------------------------
 async function buildExcelData(center) {
   const excelMap = {};
@@ -238,6 +206,7 @@ async function buildExcelData(center) {
 
   const isMaster = center === MASTER_CENTER_NAME;
 
+  // Master는 전체 조회, 일반 센터는 centerName 필터링
   const excelQuery = isMaster
     ? db.collection(EXCEL_COLLECTION)
     : db.collection(EXCEL_COLLECTION).where("center_name", "==", center);
@@ -442,40 +411,50 @@ async function getSheetLabels(center) {
 
 // ---------------------------------------------------------------------------
 // POST /api/login
-// 기존 클라이언트의 UserDB 조회(이름+전화번호) 로직을 서버로 이전
-// [수정] 성공 시 세션 토큰 발급, 실패 사유(미등록/비활성) 메시지 통일,
-//        IP당 시도 횟수 제한
+// [2026-07 변경] 로그인 판정(이름+전화번호 대조, brute-force 방어)은
+// M-Event의 loginWithCredentials Cloud Function으로 위임됨.
+// 클라이언트는 그 함수가 발급한 커스텀 토큰으로 Firebase Auth 로그인 후
+// idToken을 이 엔드포인트로 보낸다. 여기서는 idToken 검증 + UserDB 조회 +
+// 기존 HMAC 세션 토큰 발급만 담당한다.
+//
+// UserDB 문서 ID = Firebase Auth UID (loginWithCredentials가
+// admin.auth().createCustomToken(matched.id, ...)로 문서ID를 그대로 uid로
+// 사용하기 때문) → where 쿼리 없이 doc(uid) 단건 조회로 매칭 가능.
 // ---------------------------------------------------------------------------
-app.post("/api/login", loginRateLimit, async (req, res) => {
+app.post("/api/login", async (req, res) => {
   try {
-    const { name, phone } = req.body || {};
-    if (!name || !phone) {
-      return res.status(400).json({ ok: false, message: "이름과 전화번호를 모두 입력해주세요." });
+    const { idToken } = req.body || {};
+    if (!idToken) {
+      return res.status(400).json({ ok: false, message: "인증 토큰이 없습니다." });
     }
 
-    const snapshot = await db
-      .collection("UserDB")
-      .where("name", "==", name)
-      .where("phone", "==", phone)
-      .get();
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    const uid = decoded.uid;
 
-    // [수정] "미등록"과 "비활성 계정" 응답을 통일해 계정 존재 여부 노출 방지.
-    // active 필드가 명시적으로 true인 계정만 로그인 허용
-    // (Firebase 콘솔에서 active: true/false로 관리)
-    if (snapshot.empty || snapshot.docs[0].data().active !== true) {
+    const doc = await db.collection("UserDB").doc(uid).get();
+
+    // [유지] "미등록"과 "비활성 계정" 응답을 통일해 계정 존재 여부 노출 방지.
+    if (!doc.exists || doc.data().active !== true) {
       return res.status(401).json({
         ok: false,
         message: "인증 실패: 정보가 일치하지 않거나 접근이 제한된 계정입니다. 관리자에게 문의하세요.",
       });
     }
 
-    const userData = snapshot.docs[0].data();
-    const center = userData.center_name || "";
+    const userData = doc.data();
 
+    // allowed_apps가 배열로 지정된 경우에만 화이트리스트 검사.
+    // 필드 자체가 없으면(Array가 아니면) 전체 앱 허용 — Cloud Function의
+    // isAppAllowed()와 동일한 하위호환 규칙.
+    if (Array.isArray(userData.allowed_apps) && !userData.allowed_apps.includes("m-smart")) {
+      return res.status(403).json({ ok: false, message: "이 계정은 M-SMART 접근 권한이 없습니다." });
+    }
+
+    const center = userData.center_name || "";
     return res.json({ ok: true, center, token: signSession(center) });
   } catch (err) {
     console.error("로그인 처리 오류:", err);
-    return res.status(500).json({ ok: false, message: "서버 연결에 문제가 발생했습니다." });
+    return res.status(401).json({ ok: false, message: "인증 토큰이 유효하지 않습니다." });
   }
 });
 
@@ -504,7 +483,7 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
       const lookbackDate = getLookbackDateString(INSPECTION_LOGS_LOOKBACK_DAYS);
 
       // inspection_logs: 최근 60일치만 조회 (datetime은 ISO 문자열이라 사전식 비교 = 시간순 비교와 동일)
-      // Master는 center_name 필터 없이 전체 센터를 60일 리밋만 걸어서 조회
+      // Master는 centerName 필터 없이 전체 센터를 60일 리밋만 걸어서 조회
       const logsQuery = isMaster
         ? db.collection("inspection_logs").where("datetime", ">=", lookbackDate)
         : db
