@@ -17,102 +17,65 @@
       // 예: const API_BASE = "https://facility-dashboard-xxxxx-an.a.run.app";
       // ─────────────────────────────────────────────────────────
       const API_BASE = "";
+    </script>
+    <!-- ─────────────────────────────────────────────────────────
+         [2026-07 추가] 로그인 전용 Firebase SDK (Auth + Functions)
+         M-Event의 loginWithCredentials Callable Function을 그대로 호출해
+         이름+전화번호 대조 로직을 서버(Cloud Function)에 위임한다.
+         Firestore 데이터 읽기는 여전히 여기서 하지 않고 /api/* 서버가 전담한다.
+    ─────────────────────────────────────────────────────────── -->
+    <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-functions-compat.js"></script>
+    <script>
+      const firebaseConfig = {
+        apiKey: "AIzaSyCgSuudB0Fax1ONAYHJwwYv99nhGAHIbO0",
+        authDomain: "m-smart-90148.firebaseapp.com",
+        projectId: "m-smart-90148",
+        storageBucket: "m-smart-90148.firebasestorage.app",
+        messagingSenderId: "267082158406",
+        appId: "1:267082158406:web:2c59cfea94918d49ea9547"
+      };
+      firebase.initializeApp(firebaseConfig);
     </script>  
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
         :root {
-            --bg-dark: #0B0F14;
-            --panel-2: #161D26;
-            --stripe: #141B23;
-            --card-bg: #11161D;
-            --text-main: #E7ECF1;
-            --sub: #8996A5;
-            --sub-dim: #5B6672;
-            --border-color: #232C36;
-            --accent-blue: #5EA1FF;
-            --accent-teal: #2DD4BF;
-            --danger: #EF4B5F;
-            --warn: #F5A623;
-            --divider: #3A4451;
-            --btn-secondary-bg: #2A323C;
-            --btn-secondary-text: #E7ECF1;
-            --hidden-btn-idle: #3A4451;
-            --overlay-bg: rgba(11, 15, 20, 0.8);
-            --modal-overlay-bg: rgba(5, 8, 11, 0.7);
-            --shadow-login: 0 10px 30px rgba(0,0,0,0.5);
-            --shadow-modal: 0 20px 60px rgba(0,0,0,0.5);
-            --chart-grid: #1B222B;
-            --chart-tick: #8996A5;
-            --chart-label: #E7ECF1;
-            --chart-label-strong: #E7ECF1;
-            --chart-datalabel-onpie: #0B0F14;
-            color-scheme: dark;
-        }
-
-        /* 💡 [신규] 라이트 테마 토글 — html.light-theme 클래스가 붙으면 원래(밝은) 톤으로 전환 */
-        html.light-theme {
             --bg-dark: #f4f6f9;
-            --panel-2: #edf2f7;
-            --stripe: #f8fafc;
             --card-bg: #ffffff;
-            --text-main: #1e293b;
-            --sub: #475569;
-            --sub-dim: #94a3b8;
+            --text-main: #333333;
             --border-color: #e2e8f0;
             --accent-blue: #3b82f6;
-            --divider: #cbd5e1;
-            --btn-secondary-bg: #4b5563;
-            --btn-secondary-text: #ffffff;
-            --hidden-btn-idle: #cbd5e1;
-            --overlay-bg: rgba(255, 255, 255, 0.5);
-            --modal-overlay-bg: rgba(15, 23, 42, 0.55);
-            --shadow-login: 0 10px 25px -5px rgba(0,0,0,0.1);
-            --shadow-modal: 0 20px 60px rgba(0,0,0,0.25);
-            --chart-grid: #f1f5f9;
-            --chart-tick: #64748b;
-            --chart-label: #475569;
-            --chart-label-strong: #1e293b;
-            --chart-datalabel-onpie: #ffffff;
-            color-scheme: light;
         }
-        html.light-theme .refresh-btn { color: white; }
-        html.light-theme .theme-toggle-btn i.fa-sun { display: inline; }
-        html.light-theme .theme-toggle-btn i.fa-moon { display: none; }
-        .theme-toggle-btn i.fa-sun { display: none; }
-        .theme-toggle-btn i.fa-moon { display: inline; }
-
+        
         /* [일반 창 모드 기본값] */
         html, body {
             margin: 0; box-sizing: border-box; height: auto !important; overflow: auto !important;
         }
         body {
-            padding: 20px;
-            font-family: 'IBM Plex Sans', 'Malgun Gothic', dotum, sans-serif;
-            background: var(--bg-dark); color: var(--text-main);
+            padding: 20px; font-family: 'Malgun Gothic', dotum, sans-serif; background: var(--bg-dark); color: var(--text-main);
             display: flex; flex-direction: column;
         }
-
+        
         #dashboard-content {
             display: flex; flex-direction: column; width: 100%;
         }
-
+        
         .header-bar {
             display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid var(--border-color); flex-shrink: 0;
         }
         .header-left { display: flex; align-items: center; gap: 15px; }
-
+        
         /* 헤더 우측 버튼 그룹 정의 */
         .header-right { 
             display: flex; align-items: center; gap: 10px; white-space: nowrap; 
         }
-
+        
         .company-logo {
             height: 52px; width: auto; object-fit: contain; transform-origin: center center;
             animation: waveFlag 3s ease-in-out infinite alternate;
-            filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.4));
+            filter: drop-shadow(2px 4px 6px rgba(0, 0, 0, 0.15));
         }
-
+        
         @keyframes waveFlag {
             0% { transform: translate(0, 0) rotateX(0deg) rotateY(-5deg) skewY(-1deg); }
             5% { transform: translate(1px, -1px) rotateX(2deg) rotateY(5deg) skewY(1deg); }
@@ -121,38 +84,29 @@
 
         .fullscreen-loader {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background: var(--overlay-bg); backdrop-filter: blur(1px); -webkit-backdrop-filter: blur(1px);
+            background: rgba(255, 255, 255, 0.5); backdrop-filter: blur(0.5px); -webkit-backdrop-filter: blur(0.5px);
             display: flex; justify-content: center; align-items: center; z-index: 9999;
         }
         .loader-box { text-align: center; }
         .spinner-circle {
-            width: 50px; height: 50px; border: 5px solid var(--border-color); border-top: 5px solid var(--accent-blue); border-radius: 50%;
+            width: 50px; height: 50px; border: 5px solid #e2e8f0; border-top: 5px solid #3b82f6; border-radius: 50%;
             animation: loader-spin 1s linear infinite; margin: 0 auto 15px;
         }
-        .loader-text { font-size: 16px; font-weight: bold; color: var(--text-main); margin: 0; }
+        .loader-text { font-size: 16px; font-weight: bold; color: #1e293b; margin: 0; }
 
         @keyframes loader-spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-        .header-bar h2 { margin: 0; font-size: 24px; color: var(--text-main); font-weight: 600; }
-
+        
+        .header-bar h2 { margin: 0; font-size: 24px; color: #1e293b; }
+        
         /* 기본 상단 버튼 스타일 */
         .refresh-btn {
-            background: var(--accent-blue); color: #0B0F14; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; transition: 0.2s;
+            background: var(--accent-blue); color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; transition: 0.2s;
         }
-        .refresh-btn:hover { background: #7FB6FF; }
-
-        .theme-toggle-btn {
-            background: var(--accent-teal); color: #0B0F14;
-            border: none; border-radius: 6px; cursor: pointer;
-            width: 30px; height: 30px; padding: 0;
-            display: inline-flex; align-items: center; justify-content: center;
-            font-size: 14px; transition: 0.2s; flex-shrink: 0;
-        }
-        .theme-toggle-btn:hover { filter: brightness(1.15); transform: scale(1.05); }
-
+        .refresh-btn:hover { background: #1d4ed8; }
+        
         /* 💡 [트릭 구현] 변신형 비밀 로그아웃 버튼 애니메이션 효과 */
         .hidden-logout-btn {
-            background: var(--hidden-btn-idle); /* 평소에는 은은한 회색 세로선처럼 보이도록 설정 */
+            background: #cbd5e1; /* 평소에는 연한 회색 세로선처럼 보이도록 설정 */
             color: transparent;  /* 글자 숨김 */
             border: none;
             width: 4px;          /* 평소에는 'I' 모양처럼 얇게 */
@@ -166,21 +120,11 @@
             align-items: center;
             justify-content: center;
             gap: 8px;
-            flex-shrink: 0;
+            
+            /* 💡 버튼 자체를 오른쪽 끝으로 강제 배달 시킵니다 */
+            margin-left: auto; 
         }
-
-        /* 💡 [신규] 로그아웃 버튼 + 테마 토글 버튼을 한 줄로 묶는 래퍼.
-           row-reverse라서 DOM상 첫 번째(로그아웃)가 오른쪽 끝에 고정되고,
-           로그아웃이 hover로 펼쳐지면(width 증가) 그 다음에 오는 토글 버튼이
-           자연스럽게 왼쪽으로 밀려납니다. */
-        .right-actions {
-            display: flex;
-            flex-direction: row-reverse;
-            align-items: center;
-            gap: 8px;
-            margin-left: auto;
-        }
-
+        
         /* 로그아웃 안쪽 아이콘/텍스트 감싸는 레이어 */
         .hidden-logout-btn span, 
         .hidden-logout-btn i {
@@ -188,11 +132,11 @@
             transition: opacity 0.2s ease;
             white-space: nowrap;
         }
-
+        
         /* 💡 [수정] 중요! `.filter-bar:hover` 조건을 삭제했습니다.
            이제 오직 버튼 자기 자신(`.hidden-logout-btn:hover`) 위에 마우스가 올라갔을 때만 펴집니다! */
         .hidden-logout-btn:hover {
-            background: var(--danger); /* 마우스 오면 강렬한 레드로 변경 */
+            background: #ef4444; /* 마우스 오면 강렬한 레드로 변경 */
             color: white;
             width: 105px;        /* 원래 버튼 너비로 쫙 펼쳐짐 */
             height: 32px;        /* 일반 버튼 크기로 팽창 */
@@ -200,7 +144,7 @@
             border-radius: 6px;
             transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1);
         }
-
+        
         /* 💡 [수정] 내부 글씨 서서히 등장 조건도 버튼 자체 호버(`:hover`)로 통일 */
         .hidden-logout-btn:hover span,
         .hidden-logout-btn:hover i {
@@ -208,16 +152,13 @@
             transition: opacity 0.2s ease;
             transition-delay: 0.15s; /* 노출 타이밍 조율 */
         }
-
+        
         .filter-bar {
-            background: var(--card-bg); padding: 12px 15px; border-radius: 12px; margin-bottom: 15px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap; border: 1px solid var(--border-color); flex-shrink: 0;
+            background: var(--card-bg); padding: 12px 15px; border-radius: 12px; margin-bottom: 15px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap; border: 1px solid var(--border-color); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); flex-shrink: 0;
         }
-        .filter-group { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: bold; color: var(--sub); }
-        .filter-input {
-            padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-family: inherit;
-            background: var(--panel-2); color: var(--text-main);
-        }
-
+        .filter-group { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: bold; color: #475569; }
+        .filter-input { padding: 6px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-family: inherit; }
+        
         /* [일반 창 모드] 고정 격자 구조 */
         .dashboard-grid { 
             display: grid; 
@@ -227,12 +168,12 @@
         }
         .chart-card { 
             background: var(--card-bg); border-radius: 12px; padding: 20px; 
-            border: 1px solid var(--border-color); 
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); border: 1px solid var(--border-color); 
             box-sizing: border-box; display: flex; flex-direction: column; min-height: 0;
             height: 360px !important;
             overflow: hidden;
         }
-
+        
         /* [전체화면 모드 전용 스타일] */
         :-webkit-full-screen body { height: 100vh !important; padding: 12px !important; overflow: hidden !important; }
         :-ms-fullscreen body { height: 100vh !important; padding: 12px !important; overflow: hidden !important; }
@@ -262,17 +203,17 @@
             margin-bottom: 8px !important;
         }
 
-        .chart-card h3 { margin-top: 0; margin-bottom: 15px; font-size: 15px; color: var(--text-main); font-weight: 600; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-
+        .chart-card h3 { margin-top: 0; margin-bottom: 15px; font-size: 16px; color: #475569; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        
         .scrollable-chart-box-x { position: relative; flex: 1; width: 100%; overflow-x: auto; overflow-y: hidden; min-height: 0; }
         .scrollable-chart-box-y { position: relative; flex: 1; width: 100%; overflow-y: auto !important; overflow-x: hidden !important; min-height: 0; }
         .table-wrapper { width: 100%; overflow-x: auto; flex: 1; min-height: 0; }
-
+        
         .pivot-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .pivot-table th { background: var(--panel-2); color: var(--sub); padding: 10px; font-weight: bold; border: 1px solid var(--border-color); position: sticky; top: 0; text-align: center; }
+        .pivot-table th { background: #edf2f7; color: #4a5568; padding: 10px; font-weight: bold; border: 1px solid var(--border-color); position: sticky; top: 0; text-align: center; }
         .pivot-table td { padding: 10px; border: 1px solid var(--border-color); }
-        .pivot-table tr:nth-child(even) { background: var(--stripe); }
-
+        .pivot-table tr:nth-child(even) { background: #f8fafc; }
+        
         /* 4번 영역 배치 */
         .pie-split-container { 
             display: flex; width: 100%; flex: 1; min-height: 0;
@@ -283,28 +224,23 @@
         .table-right-box { width: 48%; height: 95%; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 6px; min-height: 0; }
 
         #inspector-pivot-body td { text-align: center !important; }
-
+        
         .loading-view { text-align: center; font-size: 18px; padding: 15px; color: var(--accent-blue); font-weight: bold; flex-shrink: 0; }
-
-        ::-webkit-scrollbar { width: 10px; height: 10px; }
-        ::-webkit-scrollbar-track { background: var(--bg-dark); }
-        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 6px; }
-        ::-webkit-scrollbar-thumb:hover { background: var(--sub-dim); }
     </style>
 </head>
 <body>
 
-    <div id="login-overlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:var(--bg-dark); z-index:9999; display:none; justify-content:center; align-items:center;">
-        <div style="width:320px; background:var(--card-bg); padding: 30px 24px; border-radius: 12px; border: 1px solid var(--border-color); box-shadow: var(--shadow-login); text-align:center; box-sizing: border-box;">
+    <div id="login-overlay" style="position:fixed; top:0; left:0; width:100%; height:100%; background:#f8fafc; z-index:9999; display:none; justify-content:center; align-items:center;">
+        <div style="width:320px; background:#ffffff; padding: 30px 24px; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); text-align:center; box-sizing: border-box;">
             <div style="margin-bottom: 20px; display: flex; justify-content: center; align-items: center;">
                 <img src="assets/logo.jpg" alt="Company Logo" style="height: 48px; width: auto; object-fit: contain;" onerror="this.style.display='none';">
             </div>
-            <h3 style="margin: 0 0 20px 0; font-size: 19px; color: var(--text-main); font-weight: bold;">현장 점검 접속 인증</h3>
-            <input type="text" id="loginName" placeholder="이름" style="width:100%; height:42px; padding:0 12px; margin-bottom:12px; border:1px solid var(--border-color); border-radius:6px; font-size:14px; box-sizing:border-box; outline:none; background:var(--panel-2); color:var(--text-main);">
+            <h3 style="margin: 0 0 20px 0; font-size: 19px; color: #1e293b; font-weight: bold;">현장 점검 접속 인증</h3>
+            <input type="text" id="loginName" placeholder="이름" style="width:100%; height:42px; padding:0 12px; margin-bottom:12px; border:1px solid #e2e8f0; border-radius:6px; font-size:14px; box-sizing:border-box; outline:none;">
             <br>
-            <input type="text" id="loginPhone" placeholder="전화번호" style="width:100%; height:42px; padding:0 12px; margin-bottom:20px; border:1px solid var(--border-color); border-radius:6px; font-size:14px; box-sizing:border-box; outline:none; background:var(--panel-2); color:var(--text-main);">
+            <input type="text" id="loginPhone" placeholder="전화번호" style="width:100%; height:42px; padding:0 12px; margin-bottom:20px; border:1px solid #e2e8f0; border-radius:6px; font-size:14px; box-sizing:border-box; outline:none;">
             <br>
-            <button onclick="authenticate()" style="width:100%; height:42px; background:var(--accent-blue); color:var(--bg-dark); border:none; border-radius:6px; font-size:14px; font-weight:bold; cursor:pointer; box-sizing:border-box;">확인</button>
+            <button onclick="authenticate()" style="width:100%; height:42px; background:#3b82f6; color:white; border:none; border-radius:6px; font-size:14px; font-weight:bold; cursor:pointer; box-sizing:border-box;">확인</button>
         </div>
     </div>
 
@@ -318,7 +254,7 @@
                 <button class="refresh-btn" onclick="loadDashboardData()">
                     <i class="fa-solid fa-rotate"></i> 현황 동기화
                 </button>
-                <button class="refresh-btn" onclick="toggleFullScreen()" style="background: var(--btn-secondary-bg); color: var(--btn-secondary-text);">
+                <button class="refresh-btn" onclick="toggleFullScreen()" style="background: #4b5563;">
                     <i class="fa-solid fa-expand"></i> 전체화면
                 </button>  
             </div>
@@ -332,25 +268,25 @@
                 </select>
             </div>
 
-            <span id="centerFilterDivider" style="display:none; color:var(--divider);">|</span>
+            <span id="centerFilterDivider" style="display:none;">|</span>
 
             <div class="filter-group">
                 <i class="fa-regular fa-calendar-days"></i>
                 <input type="date" id="startDate" class="filter-input"> ~ <input type="date" id="endDate" class="filter-input">
-                <button type="button" onclick="resetDateFilter()" class="filter-input" style="margin-left: 5px; cursor: pointer; background: #161D26; border: 1px solid #232C36; padding: 0 8px; font-size: 12px; height: 100%; color:#8996A5;">선택 안함</button>
+                <button type="button" onclick="resetDateFilter()" class="filter-input" style="margin-left: 5px; cursor: pointer; background: #f1f5f9; border: 1px solid #cbd5e1; padding: 0 8px; font-size: 12px; height: 100%;">선택 안함</button>
             </div>
-
-            <span style="color:var(--divider);">|</span>
-
+            
+            <span>|</span>
+            
             <div class="filter-group">
                 <label for="filterInspector">작업자: </label>
                 <select id="filterInspector" class="filter-input">
                     <option value="all">전체 작업자</option>
                 </select>
             </div>
-
-            <span style="color:var(--divider);">|</span>
-
+            
+            <span>|</span>
+            
             <div class="filter-group">
                 <label for="facilitySelect">설비: </label> <select id="facilitySelect" class="filter-input"> <option value="전체">전체 설비</option>
                     <option value="전기">전기설비</option>
@@ -359,21 +295,14 @@
                     <option value="통신">통신설비</option> 
                 </select>
             </div>
-
+            
             <button class="refresh-btn" onclick="applyFilters()" style="padding: 7px 15px; font-size: 13px;">
                 <i class="fa-solid fa-magnifying-glass"></i> 검색
             </button>
-
-            <div class="right-actions">
-                <button class="hidden-logout-btn" onclick="logout()">
-                    <i class="fa-solid fa-right-from-bracket"></i>
-                    <span>로그아웃</span>
-                </button>
-                <button class="theme-toggle-btn" onclick="toggleTheme()" title="화면 테마 전환 (다크/라이트)">
-                    <i class="fa-solid fa-sun"></i>
-                    <i class="fa-solid fa-moon"></i>
-                </button>
-            </div>
+            <button class="hidden-logout-btn" onclick="logout()">
+                <i class="fa-solid fa-right-from-bracket"></i>
+                <span>로그아웃</span>
+            </button>
         </div>
 
         <div id="loading-indicator" class="loading-view" style="display:none;">
@@ -407,7 +336,7 @@
                                 <th>점검 총 건수</th>
                                 <th>
                                     <a href="javascript:void(0)" onclick="openExcelModal()"
-                                       style="color:#E7ECF1; text-decoration:underline; cursor:pointer;"
+                                       style="color:#1e293b; text-decoration:underline; cursor:pointer;"
                                        title="전체 설비의 엑셀 보고서 목록 보기">
                                         보고서
                                     </a>
@@ -429,8 +358,8 @@
                         <table class="pivot-table" style="font-size: 12px; width: 100%;">
                             <thead>
                                 <tr>
-                                    <th style="padding: 6px; background: var(--panel-2); position: sticky; top: 0;">작업자</th>
-                                    <th style="padding: 6px; background: var(--panel-2); position: sticky; top: 0;">점검 횟수</th>
+                                    <th style="padding: 6px; background: #f1f5f9; position: sticky; top: 0;">작업자</th>
+                                    <th style="padding: 6px; background: #f1f5f9; position: sticky; top: 0;">점검 횟수</th>
                                 </tr>
                             </thead>
                             <tbody id="inspector-pivot-body"></tbody>
@@ -453,13 +382,13 @@
          - 제목: 설비ID(위치명)
          - 10~20행씩 페이지네이션, 최신순 정렬은 서버(/api/excel-files)에서 처리
     ─────────────────────────────────────────────────────────── -->
-    <div id="excel-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:var(--modal-overlay-bg); z-index:10000; justify-content:center; align-items:center;">
-        <div style="background:var(--card-bg); width:min(680px, 92vw); max-height:80vh; border-radius:14px; border: 1px solid var(--border-color); box-shadow:var(--shadow-modal); display:flex; flex-direction:column; overflow:hidden;">
-            <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid var(--border-color);">
-                <h3 id="excel-modal-title" style="margin:0; font-size:17px; color:var(--text-main);">
+    <div id="excel-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.55); z-index:10000; justify-content:center; align-items:center;">
+        <div style="background:#fff; width:min(680px, 92vw); max-height:80vh; border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,0.25); display:flex; flex-direction:column; overflow:hidden;">
+            <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid #e2e8f0;">
+                <h3 id="excel-modal-title" style="margin:0; font-size:17px; color:#1e293b;">
                     <i class="fa-solid fa-file-excel" style="color:#217346; margin-right:6px;"></i>설비ID
                 </h3>
-                <button onclick="closeExcelModal()" style="border:none; background:transparent; font-size:20px; color:var(--sub); cursor:pointer; line-height:1;">
+                <button onclick="closeExcelModal()" style="border:none; background:transparent; font-size:20px; color:#64748b; cursor:pointer; line-height:1;">
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </div>
@@ -468,7 +397,7 @@
                 <!-- JS로 채워짐: 로딩 / 목록 / 빈 상태 -->
             </div>
 
-            <div id="excel-modal-pagination" style="display:flex; justify-content:center; align-items:center; gap:6px; padding:14px 22px; border-top:1px solid var(--border-color); flex-wrap:wrap;">
+            <div id="excel-modal-pagination" style="display:flex; justify-content:center; align-items:center; gap:6px; padding:14px 22px; border-top:1px solid #e2e8f0; flex-wrap:wrap;">
                 <!-- JS로 채워짐: 페이지 번호 버튼 -->
             </div>
         </div>
@@ -488,34 +417,6 @@
         // innerHTML에 넣기 전 반드시 이스케이프한다.
         // URL은 https만 허용해 javascript: 스킴 등을 차단한다.
         // ─────────────────────────────────────────────────────────
-        // ─────────────────────────────────────────────────────────
-        // [신규] 다크/라이트 테마 토글
-        // Canvas(Chart.js)는 CSS var()를 직접 못 읽으므로, 실제 계산된 색상값을
-        // getComputedStyle로 읽어와 차트 옵션에 그대로 넣어줍니다.
-        // ─────────────────────────────────────────────────────────
-        function cssVar(name) {
-            return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-        }
-
-        function applyTheme(theme) {
-            document.documentElement.classList.toggle('light-theme', theme === 'light');
-            localStorage.setItem('uiTheme', theme);
-        }
-
-        function toggleTheme() {
-            const isLight = document.documentElement.classList.contains('light-theme');
-            applyTheme(isLight ? 'dark' : 'light');
-            // 차트는 canvas라 클래스만 바꿔선 안 바뀌므로, 현재 필터 기준으로 다시 그림
-            if (typeof applyFilters === 'function' && allRecords.length >= 0) {
-                applyFilters();
-            }
-        }
-
-        (function initTheme() {
-            const saved = localStorage.getItem('uiTheme');
-            if (saved === 'light') document.documentElement.classList.add('light-theme');
-        })();
-
         function escapeHtml(s) {
             return String(s ?? "").replace(/[&<>"']/g, c =>
                 ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -606,6 +507,15 @@
             document.getElementById("endDate").value = "";
         }
 
+        // ─────────────────────────────────────────────────────────
+        // [2026-07 변경] 로그인 판정을 M-Event의 loginWithCredentials
+        // Callable Function으로 위임.
+        // 1) loginWithCredentials({name, phone, app:"m-smart"}) 호출
+        //    → 실패 시 예외(throw), 메시지에 "남은 시도 N회" 등 포함
+        // 2) 반환된 커스텀 토큰으로 Firebase Auth 로그인 → idToken 발급
+        // 3) idToken을 서버(/api/login)로 보내 검증 + 기존 HMAC 세션 토큰 발급
+        //    (authMiddleware, /api/dashboard 등 이후 흐름은 전부 기존과 동일)
+        // ─────────────────────────────────────────────────────────
         async function authenticate() {
             const name = document.getElementById('loginName').value;
             const phone = document.getElementById('loginPhone').value;
@@ -616,11 +526,18 @@
             }
 
             try {
-                // 로그인은 토큰 발급 전이므로 apiFetch 대신 일반 fetch 사용
+                const functions = firebase.app().functions("asia-northeast3");
+                const callLogin = functions.httpsCallable("loginWithCredentials");
+                const callRes = await callLogin({ name, phone, app: "m-smart" });
+
+                await firebase.auth().signInWithCustomToken(callRes.data.token);
+                const idToken = await firebase.auth().currentUser.getIdToken();
+
+                // 서버 세션(HMAC) 발급은 기존과 동일하게 /api/login 사용, body만 idToken으로 변경
                 const res = await fetch(`${API_BASE}/api/login`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, phone })
+                    body: JSON.stringify({ idToken })
                 });
                 const result = await res.json();
 
@@ -642,7 +559,8 @@
                 }
             } catch (error) {
                 console.error("인증 처리 중 오류:", error);
-                alert("서버 연결에 문제가 발생했습니다.");
+                // loginWithCredentials가 던지는 예외 메시지("남은 시도 N회", "N분 후 다시 시도" 등)를 그대로 노출
+                alert(error?.message || "서버 연결에 문제가 발생했습니다.");
             }
         }
 
@@ -744,7 +662,7 @@
             const { fid } = excelModalState;
             excelModalState.page = page;
 
-            bodyEl.innerHTML = `<div style="text-align:center; padding:30px; color:var(--sub-dim);"><i class="fa-solid fa-spinner fa-spin"></i> 불러오는 중...</div>`;
+            bodyEl.innerHTML = `<div style="text-align:center; padding:30px; color:#94a3b8;"><i class="fa-solid fa-spinner fa-spin"></i> 불러오는 중...</div>`;
             pagerEl.innerHTML = "";
 
             try {
@@ -752,7 +670,7 @@
                 const result = await apiFetch(`/api/excel-files?center=${encodeURIComponent(currentUserCenter)}${fidParam}&page=${page}&pageSize=${EXCEL_MODAL_PAGE_SIZE}`);
 
                 if (!result.ok) {
-                    bodyEl.innerHTML = `<div style="text-align:center; padding:30px; color:var(--danger);">목록을 불러오지 못했습니다.</div>`;
+                    bodyEl.innerHTML = `<div style="text-align:center; padding:30px; color:#ef4444;">목록을 불러오지 못했습니다.</div>`;
                     return;
                 }
 
@@ -761,7 +679,7 @@
                 renderExcelModalPagination(result.page, result.totalPages, result.totalCount);
             } catch (error) {
                 console.error("보고서 목록 조회 오류:", error);
-                bodyEl.innerHTML = `<div style="text-align:center; padding:30px; color:var(--danger);">서버 연결에 문제가 발생했습니다.</div>`;
+                bodyEl.innerHTML = `<div style="text-align:center; padding:30px; color:#ef4444;">서버 연결에 문제가 발생했습니다.</div>`;
             }
         }
 
@@ -769,7 +687,7 @@
             const bodyEl = document.getElementById('excel-modal-body');
 
             if (!items || items.length === 0) {
-                bodyEl.innerHTML = `<div style="text-align:center; padding:30px; color:var(--sub-dim);">표시할 보고서가 없습니다.</div>`;
+                bodyEl.innerHTML = `<div style="text-align:center; padding:30px; color:#94a3b8;">표시할 보고서가 없습니다.</div>`;
                 return;
             }
 
@@ -786,7 +704,7 @@
                 if (showFid && item.fid) {
                     const locationName = fidLocations[item.fid];
                     const badgeText = locationName ? `${locationName} (${item.fid})` : item.fid;
-                    fidBadge = `<span style="color:var(--accent-teal); font-weight:bold; font-size:12px; margin-right:8px; flex-shrink:0;">${escapeHtml(badgeText)}</span>`;
+                    fidBadge = `<span style="color:#217346; font-weight:bold; font-size:12px; margin-right:8px; flex-shrink:0;">${escapeHtml(badgeText)}</span>`;
                 }
 
                 // url이 비정상(https 아님)이면 링크 비활성 표시
@@ -794,16 +712,16 @@
 
                 return `
                     <a ${hrefAttr}
-                       style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 10px; border-bottom:1px solid var(--border-color); text-decoration:none; color:var(--text-main);"
-                       onmouseover="this.style.background='var(--panel-2)'" onmouseout="this.style.background='transparent'">
+                       style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:12px 10px; border-bottom:1px solid #f1f5f9; text-decoration:none; color:#1e293b;"
+                       onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='transparent'">
                         <span style="display:flex; align-items:center; gap:8px; min-width:0;">
                             <i class="fa-solid fa-file-excel" style="color:#217346; flex-shrink:0;"></i>
                             ${fidBadge}
-                            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--sub); font-size:13px;">${escapeHtml(fileName)}</span>
+                            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#64748b; font-size:13px;">${escapeHtml(fileName)}</span>
                         </span>
                         <span style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
-                            <span style="color:var(--sub); font-size:13px;">${escapeHtml(dateText)}</span>
-                            <i class="fa-solid fa-download" style="color:var(--sub-dim);"></i>
+                            <span style="color:#64748b; font-size:13px;">${escapeHtml(dateText)}</span>
+                            <i class="fa-solid fa-download" style="color:#94a3b8;"></i>
                         </span>
                     </a>`;
             }).join("");
@@ -815,15 +733,15 @@
             const pagerEl = document.getElementById('excel-modal-pagination');
 
             if (totalPages <= 1) {
-                pagerEl.innerHTML = `<span style="color:var(--sub-dim); font-size:13px;">총 ${totalCount}건</span>`;
+                pagerEl.innerHTML = `<span style="color:#94a3b8; font-size:13px;">총 ${totalCount}건</span>`;
                 return;
             }
 
-            let buttonsHtml = `<span style="color:var(--sub-dim); font-size:13px; margin-right:10px;">총 ${totalCount}건</span>`;
+            let buttonsHtml = `<span style="color:#94a3b8; font-size:13px; margin-right:10px;">총 ${totalCount}건</span>`;
 
             const pageBtnStyle = (active) => `
-                min-width:30px; height:30px; padding:0 6px; border-radius:6px; border:1px solid ${active ? 'var(--accent-blue)' : 'var(--border-color)'};
-                background:${active ? 'var(--accent-blue)' : 'var(--panel-2)'}; color:${active ? 'var(--bg-dark)' : 'var(--sub)'};
+                min-width:30px; height:30px; padding:0 6px; border-radius:6px; border:1px solid ${active ? '#3b82f6' : '#e2e8f0'};
+                background:${active ? '#3b82f6' : '#fff'}; color:${active ? '#fff' : '#475569'};
                 font-weight:${active ? 'bold' : 'normal'}; cursor:pointer; font-size:13px;
             `;
 
@@ -837,7 +755,7 @@
 
             if (start > 1) {
                 buttonsHtml += `<button onclick="loadExcelModalPage(1)" style="${pageBtnStyle(false)}">1</button>`;
-                if (start > 2) buttonsHtml += `<span style="color:var(--divider);">...</span>`;
+                if (start > 2) buttonsHtml += `<span style="color:#cbd5e1;">...</span>`;
             }
 
             for (let p = start; p <= end; p++) {
@@ -845,7 +763,7 @@
             }
 
             if (end < totalPages) {
-                if (end < totalPages - 1) buttonsHtml += `<span style="color:var(--divider);">...</span>`;
+                if (end < totalPages - 1) buttonsHtml += `<span style="color:#cbd5e1;">...</span>`;
                 buttonsHtml += `<button onclick="loadExcelModalPage(${totalPages})" style="${pageBtnStyle(false)}">${totalPages}</button>`;
             }
 
@@ -920,7 +838,7 @@
                 }
             });
 
-            const palette = ['#5EA1FF', '#F5A623', '#C77DFF', '#84CC16', '#2DD4BF', '#EAB308', '#EC4899', '#34D399', '#818CF8', '#FB7185'];
+            const palette = ['#3b82f6', '#f97316', '#a855f7', '#84cc16', '#06b6d4', '#eab308', '#ec4899', '#10b981', '#6366f1', '#f43f5e'];
 
             let dates = [...new Set(records.map(r => r.date))].filter(Boolean).sort();
             let fids = [...new Set(records.map(r => r.fid))].filter(Boolean).sort();
@@ -983,13 +901,13 @@
                 options: {
                     responsive: true, maintainAspectRatio: false,
                     scales: {
-                        y: { beginAtZero: true, ticks: { stepSize: 1, color: cssVar('--chart-tick') }, grid: { color: cssVar('--chart-grid') }, grace: '15%' },
-                        x: { ticks: { color: cssVar('--chart-tick'), maxRotation: 0, minRotation: 0 }, grid: { display: false } }
+                        y: { beginAtZero: true, ticks: { stepSize: 1, color: '#64748b' }, grid: { color: '#f1f5f9' }, grace: '15%' },
+                        x: { ticks: { color: '#64748b', maxRotation: 0, minRotation: 0 }, grid: { display: false } }
                     },
                     plugins: {
                         legend: { display: false },
                         datalabels: {
-                            anchor: 'end', align: 'top', color: cssVar('--chart-label'),
+                            anchor: 'end', align: 'top', color: '#475569',
                             font: { weight: 'bold', size: 11 },
                             formatter: (val) => val > 0 ? val + '건' : ''
                         }
@@ -1030,13 +948,13 @@
                 options: {
                     indexAxis: 'y', responsive: true, maintainAspectRatio: false,
                     scales: {
-                        x: { beginAtZero: true, ticks: { stepSize: 1, color: cssVar('--chart-tick') }, grid: { color: cssVar('--chart-grid') }, grace: '15%' },
-                        y: { ticks: { color: cssVar('--chart-label-strong'), font: { weight: 'bold', size: 12 } }, grid: { display: false } }
+                        x: { beginAtZero: true, ticks: { stepSize: 1, color: '#64748b' }, grid: { color: '#f1f5f9' }, grace: '15%' },
+                        y: { ticks: { color: '#1e293b', font: { weight: 'bold', size: 12 } }, grid: { display: false } }
                     },
                     plugins: {
                         legend: { display: false },
                         datalabels: {
-                            anchor: 'end', align: 'right', color: cssVar('--chart-label'),
+                            anchor: 'end', align: 'right', color: '#475569',
                             font: { weight: 'bold', size: 11 },
                             formatter: (val) => val > 0 ? val + '건' : ''
                         }
@@ -1058,20 +976,20 @@
                     `<a href="${finalUrl}" target="_blank" rel="noopener" style="color:#217346; font-size:18px;" title="최신 엑셀 보고서 바로 다운로드">
                         <i class="fa-solid fa-file-excel"></i>
                     </a>` :
-                    `<span style="color:var(--sub-dim);">-</span>`;
+                    `<span style="color:#cbd5e1;">-</span>`;
 
                 const locationText = fidLocations[fid] ? ` (${fidLocations[fid]})` : "";
 
                 // [수정] fid/위치명 이스케이프 적용
                 tableHtml += `<tr>
-                    <td style="font-weight:bold; color:var(--text-main); text-align:left; padding-left:20px;">
-                        ${escapeHtml(fid)}<span style="color:var(--sub); font-weight:normal;">${escapeHtml(locationText)}</span>
+                    <td style="font-weight:bold; color:#1e293b; text-align:left; padding-left:20px;">
+                        ${escapeHtml(fid)}<span style="color:#64748b; font-weight:normal;">${escapeHtml(locationText)}</span>
                     </td>
-                    <td style="font-weight:bold; color:var(--accent-blue); text-align:center;">${totalCount} 건</td>
+                    <td style="font-weight:bold; color:#3b82f6; text-align:center;">${totalCount} 건</td>
                     <td style="text-align:center;">${excelIcon}</td>
                 </tr>`;
             });
-            pivotBody.innerHTML = tableHtml || `<tr><td colspan="3" style="color:var(--sub-dim); padding:40px; text-align:center;">데이터가 없습니다.</td></tr>`;
+            pivotBody.innerHTML = tableHtml || `<tr><td colspan="3" style="color:#94a3b8; padding:40px; text-align:center;">데이터가 없습니다.</td></tr>`;
 
             // 4번 뷰
             let inspectorDataList = inspectors.map((ins, idx) => {
@@ -1089,13 +1007,13 @@
             inspectorDataList.forEach(item => {
                 // [수정] 작업자명 이스케이프 적용
                 inspectorTableHtml += `<tr>
-                    <td style="font-weight: bold; color: var(--text-main);">
+                    <td style="font-weight: bold; color: #334155;">
                         <span style="display:inline-block; width:10px; height:10px; background-color:${item.color}; border-radius:50%; margin-right:6px;"></span>${escapeHtml(item.name)}
                     </td>
-                    <td style="font-weight: bold; color: var(--sub);">${item.count} 건</td>
+                    <td style="font-weight: bold; color: #475569;">${item.count} 건</td>
                 </tr>`;
             });
-            inspectorPivotBody.innerHTML = inspectorTableHtml || `<tr><td colspan="2" style="color:var(--sub-dim); padding:20px;">기록 없음</td></tr>`;
+            inspectorPivotBody.innerHTML = inspectorTableHtml || `<tr><td colspan="2" style="color:#94a3b8; padding:20px;">기록 없음</td></tr>`;
 
             const pieCanvas = document.getElementById('pieChart');
             chartInstances.pieChart = new Chart(pieCanvas, {
@@ -1108,7 +1026,7 @@
                     responsive: true, maintainAspectRatio: false,
                     plugins: {
                         datalabels: {
-                            color: cssVar('--chart-datalabel-onpie'), font: { weight: 'bold', size: 11 },
+                            color: '#ffffff', font: { weight: 'bold', size: 11 },
                             formatter: function(value, context) {
                                 if (total === 0) return '';
                                 let percentage = ((value / total) * 100).toFixed(1);
