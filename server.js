@@ -446,7 +446,7 @@ app.post("/api/login", async (req, res) => {
     // allowed_apps가 배열로 지정된 경우에만 화이트리스트 검사.
     // 필드 자체가 없으면(Array가 아니면) 전체 앱 허용 — Cloud Function의
     // isAppAllowed()와 동일한 하위호환 규칙.
-    if (Array.isArray(userData.allowed_apps) && !userData.allowed_apps.includes("m-smart")) {
+    if (Array.isArray(userData.allowed_apps) && !userData.allowed_apps.includes("dashboard")) {
       return res.status(403).json({ ok: false, message: "이 계정은 M-SMART 접근 권한이 없습니다." });
     }
 
