@@ -629,7 +629,7 @@
         // ─────────────────────────────────────────────────────────
         // [2026-07 변경] 로그인 판정을 M-Event의 loginWithCredentials
         // Callable Function으로 위임.
-        // 1) loginWithCredentials({name, phone, app:"m-smart"}) 호출
+        // 1) loginWithCredentials({name, phone, app:"dashboard"}) 호출
         //    → 실패 시 예외(throw), 메시지에 "남은 시도 N회" 등 포함
         // 2) 반환된 커스텀 토큰으로 Firebase Auth 로그인 → idToken 발급
         // 3) idToken을 서버(/api/login)로 보내 검증 + 기존 HMAC 세션 토큰 발급
@@ -647,7 +647,7 @@
             try {
                 const functions = firebase.app().functions("asia-northeast3");
                 const callLogin = functions.httpsCallable("loginWithCredentials");
-                const callRes = await callLogin({ name, phone, app: "m-smart" });
+                const callRes = await callLogin({ name, phone, app: "dashboard" });
 
                 await firebase.auth().signInWithCustomToken(callRes.data.token);
                 const idToken = await firebase.auth().currentUser.getIdToken();
