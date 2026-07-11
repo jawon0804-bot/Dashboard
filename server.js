@@ -22,7 +22,10 @@ const crypto = require("crypto");
 const admin = require("firebase-admin");
 
 const app = express();
-app.use(cors());
+// [2026-07-11 수정] cors()를 전역 적용하지 않음. 이 서버의 프론트엔드(public/index.html)는
+// express.static("public")로 같은 서버·같은 오리진에서 서빙되므로 인증 필요 API는
+// CORS가 아예 필요 없음(same-origin). 다른 도메인(m-event)이 실제로 호출하는 건
+// /api/fidlocations 하나뿐이므로, CORS는 그 라우트에만 별도로 적용한다.
 app.use(express.json());
 
 // 응답 압축 (선택 의존성) — `npm install compression` 후 자동 활성화.
@@ -65,7 +68,10 @@ const SESSION_SECRET =
     return crypto.randomBytes(32).toString("hex");
   })();
 
-const TOKEN_TTL_MS = 12 * 60 * 60 * 1000; // 12시간
+// [2026-07-11 수정] 12시간 → 4시간. 토큰에 폐기(로그아웃) 수단이 없어서
+// 탈취당했을 때 유효한 시간을 줄이는 쪽으로 대응. Firestore 조회를 늘리는
+// 실시간 폐기 목록 방식은 이 서버의 "읽기 최소화" 설계 방향과 맞지 않아 보류.
+const TOKEN_TTL_MS = 4 * 60 * 60 * 1000; // 4시간
 
 function signSession(center) {
   const payload = Buffer.from(
@@ -627,7 +633,7 @@ app.post("/api/dashboard/refresh", authMiddleware, (req, res) => {
 // fid → fid_name 매핑 반환 (m-event 이벤트트래커에서 사용)
 // ★ 이벤트(M-Event) 프로젝트가 공유 사용 중 — 응답 형식과 무인증 접근을
 //   변경하지 말 것. (변경 시 이벤트 프로젝트도 함께 배포해야 함)
-app.get("/api/fidlocations", async (req, res) => {
+app.get("/api/fidlocations", cors(), async (req, res) => {
   const center = (req.query.center || "").toString().trim();
   if (!center) return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
   try {
