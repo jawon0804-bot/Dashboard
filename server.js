@@ -28,9 +28,9 @@ const { MASTER_CENTER_NAME, INSPECTION_LOGS_LOOKBACK_DAYS } = require("./config/
 const { cache, getCache, setCache, getOrBuild } = require("./lib/cache");
 const { signSession, authMiddleware, resolveCenter } = require("./lib/session");
 const { getLookbackDateString } = require("./lib/dateUtils");
-const { buildExcelData } = require("./lib/excel");
 const { getFidLocations, getSheetLabels } = require("./lib/facilities");
 const { buildEventsData } = require("./lib/events");
+const { listReportFileMeta, signReportFileUrl } = require("./lib/reportFiles");
 
 const app = express();
 // [2026-07-11 수정] cors()를 전역 적용하지 않음. 이 서버의 프론트엔드(public/index.html)는
@@ -131,16 +131,13 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
             .where("center_name", "==", center)
             .where("datetime", ">=", lookbackDate);
 
-      const [logsSnap, { excelMap, excelListByFid }, fidLocations, eventsByFid] = await Promise.all([
+      const [logsSnap, fidLocations, eventsByFid] = await Promise.all([
         logsQuery.get(),
-        buildExcelData(center),
         getFidLocations(center),
         buildEventsData(center),
       ]);
 
       // 점검 기록 가공
-      // [수정] file_url 필드는 클라이언트에서 사용하지 않아 제거 (3번 뷰 아이콘은
-      // excelMap[fid]만 사용). 레코드 수천 건일 때 페이로드가 눈에 띄게 줄어든다.
       const records = [];
       logsSnap.forEach((doc) => {
         const data = doc.data();
@@ -156,20 +153,9 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
         });
       });
 
-      const excelCountByFid = {};
-      Object.keys(excelListByFid).forEach((fid) => {
-        excelCountByFid[fid] = excelListByFid[fid].length;
-      });
-
-      // 설비별 엑셀 전체 목록은 /api/excel-files 페이지네이션 조회에서 재사용하도록
-      // 별도 캐시 키로도 저장해둡니다 (동일 5분 TTL).
-      setCache(`excelList:${center}`, excelListByFid);
-
       return {
         center,
         records,
-        excelMap,
-        excelCountByFid,
         fidLocations,
         eventsByFid,
         generatedAt: new Date().toISOString(),
@@ -184,17 +170,16 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/excel-files?center=XXX&fid=기계_01&page=1&pageSize=15   [인증 필수]
-// - fid가 있으면: 해당 설비ID의 엑셀 보고서 전체 목록을 최신순으로 반환
-// - fid가 없으면: 센터(또는 Master)의 "모든" 설비 엑셀 보고서를 합쳐 최신순으로 반환
-//   (3번 뷰 헤더 "보고서" 클릭 시 사용 — 전체 설비 통합 목록)
-// /api/dashboard와 동일한 5분 캐시(excelList:{center})를 재사용하므로
-// 팝업을 여러 번 열어도 Firestore 추가 읽기가 거의 발생하지 않습니다.
+// GET /api/excel-files?center=XXX&page=1&pageSize=15   [인증 필수]
+// [2026-07-23 변경] Maxerve_Excel(설비별 점검표) 대신 m-event가 생성하는
+// "이벤트 보고서"(Storage report/{center}/*.xlsx)를 대신 보여준다.
+// 이벤트 보고서는 설비 단위가 아니라 센터 전체 기간 단위 파일이라 fid 파라미터는 더 이상
+// 안 씀 — 프런트가 fid를 붙여 보내도 무시하고 항상 센터(또는 Master는 전체) 통합 목록을 반환.
+// 5분 캐시(reportFiles:{center})로 Storage 목록 조회 + signed URL 발급 비용을 줄인다.
 // ---------------------------------------------------------------------------
 app.get("/api/excel-files", authMiddleware, async (req, res) => {
   try {
     const center = resolveCenter(req);
-    const fid = (req.query.fid || "").toString().trim(); // 비어있으면 "전체" 모드
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 15));
 
@@ -202,39 +187,25 @@ app.get("/api/excel-files", authMiddleware, async (req, res) => {
       return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
     }
 
-    // 캐시가 없으면(만료 또는 /api/dashboard를 아직 호출 안 한 경우) 직접 조회.
-    // getOrBuild가 동시 요청을 1회 조회로 합쳐준다.
-    const excelListByFid = await getOrBuild(`excelList:${center}`, async () => {
-      const built = await buildExcelData(center);
-      return built.excelListByFid;
-    });
-
-    let fullList;
-    if (fid) {
-      // 특정 설비ID 모드: 항목에 fid를 별도로 붙이지 않아도 이미 알고 있음
-      fullList = (excelListByFid[fid] || []).map((item) => ({ ...item, fid }));
-    } else {
-      // 전체 모드: 모든 설비ID의 파일을 합쳐서 최신순 재정렬
-      fullList = [];
-      Object.keys(excelListByFid).forEach((f) => {
-        excelListByFid[f].forEach((item) => fullList.push({ ...item, fid: f }));
-      });
-      fullList.sort((a, b) => {
-        const ta = a.uploadedAt ? new Date(a.uploadedAt).getTime() : 0;
-        const tb = b.uploadedAt ? new Date(b.uploadedAt).getTime() : 0;
-        return tb - ta;
-      });
-    }
+    // 목록 자체는 캐시(list API 1회 호출, 추가 API 호출 없음) — signed URL은 아래에서
+    // 화면에 실제로 보여줄 페이지 분량(최대 15개)에 대해서만 그때그때 발급한다.
+    const fullList = await getOrBuild(`reportFiles:${center}`, () => listReportFileMeta(center));
 
     const totalCount = fullList.length;
     const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     const safePage = Math.min(page, totalPages);
     const start = (safePage - 1) * pageSize;
-    const items = fullList.slice(start, start + pageSize);
+    const pageMeta = fullList.slice(start, start + pageSize);
+
+    const items = await Promise.all(pageMeta.map(async (item) => ({
+      fileName: item.fileName,
+      uploadedAt: item.uploadedAt,
+      file_url: await signReportFileUrl(item.path),
+    })));
 
     return res.json({
       ok: true,
-      fid: fid || null,
+      fid: null,
       page: safePage,
       pageSize,
       totalCount,
@@ -258,7 +229,7 @@ app.post("/api/dashboard/refresh", authMiddleware, (req, res) => {
 
   if (center) {
     cache.delete(`dashboard:${center}`);
-    cache.delete(`excelList:${center}`);
+    cache.delete(`reportFiles:${center}`);
   } else if (isMaster) {
     cache.clear(); // 전체 캐시 비우기는 Master만 허용
   }

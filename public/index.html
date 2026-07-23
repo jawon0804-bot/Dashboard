@@ -288,8 +288,11 @@
         .scrollable-chart-box-y { position: relative; flex: 1; width: 100%; overflow-y: auto !important; overflow-x: hidden !important; min-height: 0; }
         .table-wrapper { width: 100%; overflow-x: auto; flex: 1; min-height: 0; }
 
-        .pivot-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        .pivot-table th { background: var(--panel-2); color: var(--sub); padding: 10px; font-weight: bold; border: 1px solid var(--border-color); position: sticky; top: 0; text-align: center; }
+        /* [2026-07-23 수정] border-collapse: collapse + position: sticky th 조합은 스크롤 시
+           바로 아래 행이 헤더 위쪽으로 1px 정도 삐져나와 보이는 렌더링 버그가 있음(Chrome/WebKit
+           공통) — separate + border-spacing:0으로 바꿔서 해결. z-index도 명시해 겹침 순서 보강. */
+        .pivot-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+        .pivot-table th { background: var(--panel-2); color: var(--sub); padding: 10px; font-weight: bold; border: 1px solid var(--border-color); position: sticky; top: 0; z-index: 2; text-align: center; }
         .pivot-table td { padding: 10px; border: 1px solid var(--border-color); }
         .pivot-table tr:nth-child(even) { background: var(--stripe); }
 
@@ -428,9 +431,9 @@
                                 <th>점검 총 건수</th>
                                 <th>
                                     <a href="javascript:void(0)" onclick="openExcelModal()"
-                                       style="color:#E7ECF1; text-decoration:underline; cursor:pointer;"
-                                       title="전체 설비의 엑셀 보고서 목록 보기">
-                                        보고서
+                                       style="color:var(--text-main); text-decoration:underline; cursor:pointer;"
+                                       title="센터 이벤트 보고서 목록 보기">
+                                        이벤트 보고서
                                     </a>
                                 </th>
                             </tr>
@@ -470,8 +473,9 @@
     </div>
 
     <!-- ───────────────────────────────────────────────────────────
-         엑셀 보고서 전체 목록 팝업 (3번 뷰 피봇 테이블 "보고서" 클릭 시)
-         - 제목: 설비ID(위치명)
+         이벤트 보고서 목록 팝업 (3번 뷰 피봇 테이블 "이벤트 보고서" 클릭 시)
+         [2026-07-23] Maxerve_Excel(설비별 점검표) 대신 m-event가 Storage에 만드는
+         이벤트 보고서(report/{center}/*.xlsx)를 보여줌 — 설비 단위가 아니라 센터 전체 목록
          - 10~20행씩 페이지네이션, 최신순 정렬은 서버(/api/excel-files)에서 처리
     ─────────────────────────────────────────────────────────── -->
     <div id="excel-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:var(--modal-overlay-bg); z-index:10000; justify-content:center; align-items:center;">
@@ -712,8 +716,6 @@
         }
 
         // /api/dashboard 응답에서 그대로 받아 전역 변수에 채워 넣습니다.
-        let excelMap = {};
-        let excelCountByFid = {};
         let fidLocations = {};
         let eventsByFid = {};
         let openEventsById = {};
@@ -754,8 +756,6 @@
                 }
 
                 allRecords = result.records || [];
-                excelMap = result.excelMap || {};
-                excelCountByFid = result.excelCountByFid || {};
                 fidLocations = result.fidLocations || {};
                 eventsByFid = result.eventsByFid || {};
                 openEventsById = {};
@@ -772,9 +772,10 @@
         }
 
         // ─────────────────────────────────────────────────────────
-        // 3번 뷰 헤더 "보고서" 클릭 시 뜨는 팝업
-        // - openExcelModal(fid) : 특정 설비ID의 보고서만
-        // - openExcelModal()    : 전체 설비의 보고서를 합쳐서 (헤더 클릭 시 이 모드)
+        // 3번 뷰 헤더 "이벤트 보고서" 클릭 시 뜨는 팝업
+        // [2026-07-23] 서버가 이제 Storage(report/{center}/*.xlsx)를 보여주므로 설비 단위
+        // 개념이 없음 — openExcelModal(fid)로 불러도 서버가 fid를 무시하고 항상 센터
+        // 전체 목록을 반환한다 (fid 인자는 헤더 클릭 경로에서 실제로 쓰이지 않음)
         // - 최신순 정렬은 서버(/api/excel-files)가 처리, 페이지당 15건
         // ─────────────────────────────────────────────────────────
         const EXCEL_MODAL_PAGE_SIZE = 15;
@@ -790,7 +791,7 @@
                 const locationText = fidLocations[fid] ? ` (${fidLocations[fid]})` : "";
                 titleEl.innerHTML = `<i class="fa-solid fa-file-excel" style="color:#217346; margin-right:6px;"></i>${escapeHtml(fid)}${escapeHtml(locationText)}`;
             } else {
-                titleEl.innerHTML = `<i class="fa-solid fa-file-excel" style="color:#217346; margin-right:6px;"></i>전체 설비 보고서 목록`;
+                titleEl.innerHTML = `<i class="fa-solid fa-file-excel" style="color:#217346; margin-right:6px;"></i>이벤트 보고서 목록`;
             }
 
             overlay.style.display = 'flex';
@@ -1194,16 +1195,6 @@
             sortedFids.forEach(fid => {
                 let totalCount = records.filter(r => r.fid === fid).length;
 
-                // excelMap[fid]는 설비당 가장 최신(정렬 기준 첫 번째) 엑셀 파일 1건의 링크입니다.
-                // 아이콘 클릭 시 그 파일이 바로 새 탭에서 다운로드됩니다. (기존 동작 그대로)
-                let finalUrl = safeUrl(excelMap[fid] || "");
-
-                let excelIcon = (finalUrl !== "") ?
-                    `<a href="${finalUrl}" target="_blank" rel="noopener" style="color:#217346; font-size:18px;" title="최신 엑셀 보고서 바로 다운로드">
-                        <i class="fa-solid fa-file-excel"></i>
-                    </a>` :
-                    `<span style="color:var(--sub-dim);">-</span>`;
-
                 const displayName = fidLocations[fid] || fid;
 
                 // [수정] 위치명 이스케이프 적용 (설비ID 코드는 숨기고 위치명만 표시)
@@ -1212,7 +1203,7 @@
                         ${escapeHtml(displayName)}
                     </td>
                     <td style="font-weight:bold; color:var(--accent-blue); text-align:center;">${totalCount} 건</td>
-                    <td style="text-align:center;">${excelIcon}</td>
+                    <td></td>
                 </tr>`;
 
                 // [신규] 미완료(발생/조치중) 이벤트 행 — m-event에서 연동, 클릭 시 읽기 전용 팝업

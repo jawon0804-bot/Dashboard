@@ -4,10 +4,6 @@ module.exports = {
   // "Master" 센터로 로그인하면 모든 센터의 데이터를 통합해서 봅니다.
   MASTER_CENTER_NAME: "Master",
 
-  // 엑셀 보고서 단일 컬렉션. 센터별로 별도 컬렉션을 쓰던 방식(MaxerveUlsan_Excel 등)에서
-  // Maxerve_Excel 하나로 통합하고 centerName 필드로 필터링합니다.
-  EXCEL_COLLECTION: "Maxerve_Excel",
-
   // inspection_logs(점검기록)는 최근 60일치만 조회합니다. (엑셀 보고서는 전체 유지)
   INSPECTION_LOGS_LOOKBACK_DAYS: 60,
 
