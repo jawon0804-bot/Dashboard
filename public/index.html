@@ -1129,14 +1129,16 @@
             // 2번 뷰
             const horizontalCanvas = document.getElementById('horizontalBarChart');
             const categories = {
-                "🚨 소방설비": 0, "⚡ 전기설비": 0, "👮‍♂️ 순찰기록": 0, "⚙️ 기계/공조": 0, "🛠️ 기타설비": 0
+                "🚨 소방설비": 0, "⚡ 전기설비":  0, "🛰️ 통신설비":  0, "👮‍♂️ 순찰기록": 0, "🧹 미화업무":  0, "⚙️ 기계/공조": 0, "🌳 조경/미화": 0, "🛠️ 기타설비": 0
             };
 
             records.forEach(r => {
                 const fid = r.fid || "";
                 if (fid.includes('소방')) categories["🚨 소방설비"]++;
                 else if (fid.includes('전기')) categories["⚡ 전기설비"]++;
+                else if (fid.includes('통신')) categories["🛰️ 통신설비"]++;    
                 else if (fid.includes('순찰')) categories["👮‍♂️ 순찰기록"]++;
+                else if (fid.includes('조경') || fid.includes('미화')) categories["🌳 조경/미화"]++;    
                 else if (fid.includes('기계') || fid.includes('공조')) categories["⚙️ 기계/공조"]++;
                 else categories["🛠️ 기타설비"]++;
             });
