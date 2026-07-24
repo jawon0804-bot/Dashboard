@@ -327,7 +327,7 @@
             <br>
             <input type="text" id="loginPhone" placeholder="전화번호" style="width:100%; height:42px; padding:0 12px; margin-bottom:20px; border:1px solid var(--border-color); border-radius:6px; font-size:14px; box-sizing:border-box; outline:none; background:var(--panel-2); color:var(--text-main);">
             <br>
-            <button onclick="authenticate()" style="width:100%; height:42px; background:var(--accent-blue); color:var(--bg-dark); border:none; border-radius:6px; font-size:14px; font-weight:bold; cursor:pointer; box-sizing:border-box;">확인</button>
+            <button id="login-submit-btn" onclick="authenticate()" style="width:100%; height:42px; background:var(--accent-blue); color:var(--bg-dark); border:none; border-radius:6px; font-size:14px; font-weight:bold; cursor:pointer; box-sizing:border-box;">확인</button>
             <p style="text-align:center;margin-top:12px;"><a href="privacy.html" target="_blank" style="font-size:12px;color:var(--text-main);opacity:0.5;text-decoration:underline;">개인정보처리방침</a></p>
         </div>
     </div>
@@ -669,6 +669,10 @@
                 return;
             }
 
+            const btnEl = document.getElementById('login-submit-btn');
+            btnEl.disabled = true;
+            btnEl.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> 확인 중...`;
+
             try {
                 const functions = firebase.app().functions("asia-northeast3");
                 const callLogin = functions.httpsCallable("loginWithCredentials");
@@ -705,6 +709,9 @@
                 console.error("인증 처리 중 오류:", error);
                 // loginWithCredentials가 던지는 예외 메시지("남은 시도 N회", "N분 후 다시 시도" 등)를 그대로 노출
                 alert(error?.message || "서버 연결에 문제가 발생했습니다.");
+            } finally {
+                btnEl.disabled = false;
+                btnEl.innerHTML = "확인";
             }
         }
 
