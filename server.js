@@ -2,16 +2,18 @@
 // Cloud Run에서 실행되는 백엔드 API 서버
 // - Firestore 읽기를 이 서버 한 곳으로 집중시켜 클라이언트 직접 호출을 제거
 // - center(현장) 단위로 5분 캐시를 두어 동일 데이터 반복 조회를 방지
-// - 로그인(이름+전화번호) 인증도 서버에서 처리
+// - 로그인 세션(HMAC 서명 토큰) 발급도 서버에서 처리
 //
 // [2026-07 보안/안정성 패치]
 //  1. HMAC 서명 세션 토큰 도입: /api/dashboard, /api/excel-files, /api/centers,
-//     /api/dashboard/refresh 는 로그인 후 발급된 토큰이 있어야 접근 가능
+//     /api/event-photos, /api/dashboard/refresh 는 로그인 후 발급된 토큰이 있어야 접근 가능
 //  2. 비-Master 계정은 자기 센터 데이터만 조회 가능 (center 파라미터 위조 차단)
 //  3. 캐시 스탬피드 방지 (동시 요청 시 Firestore 조회 1회로 합침)
 //  4. 조회 실패 시 빈 결과를 캐시하지 않음 (다음 요청이 재시도)
 //  5. 60일 룩백 날짜 KST 기준으로 보정
-//  6. 로그인 시도 IP당 횟수 제한 (brute-force 방어)
+//  6. 로그인 시도 횟수 제한(brute-force 방어)은 이 서버가 아니라 m-event의
+//     loginWithCredentials Cloud Function이 담당한다 — /api/login은 그 함수가
+//     발급한 idToken을 검증만 하므로 여기서 대입 공격이 성립하지 않는다.
 //
 // ★ 주의: /api/fidlocations 는 이벤트(M-Event) 프로젝트가 공유 사용 중이므로
 //   응답 형식({ok, fidLocations, sheetLabels})과 무인증 접근을 그대로 유지한다.
@@ -22,15 +24,21 @@
 
 const express = require("express");
 const cors = require("cors");
+const compression = require("compression");
 
 const { admin, db } = require("./lib/firebase");
-const { MASTER_CENTER_NAME, INSPECTION_LOGS_LOOKBACK_DAYS } = require("./config/constants");
-const { cache, getCache, setCache, getOrBuild } = require("./lib/cache");
+const {
+  MASTER_CENTER_NAME,
+  INSPECTION_LOGS_LOOKBACK_DAYS,
+  INSPECTION_LOGS_MAX_RECORDS,
+} = require("./config/constants");
+const { cache, getCache, getOrBuild } = require("./lib/cache");
 const { signSession, authMiddleware, resolveCenter } = require("./lib/session");
 const { getLookbackDateString } = require("./lib/dateUtils");
 const { getFidLocations, getSheetLabels } = require("./lib/facilities");
-const { buildEventsData } = require("./lib/events");
+const { buildEventsData, getEventPhotos } = require("./lib/events");
 const { listReportFileMeta, signReportFileUrl } = require("./lib/reportFiles");
+const { getCenterList, isKnownCenter } = require("./lib/centers");
 
 const app = express();
 // [2026-07-11 수정] cors()를 전역 적용하지 않음. 이 서버의 프론트엔드(public/index.html)는
@@ -38,14 +46,7 @@ const app = express();
 // CORS가 아예 필요 없음(same-origin). 다른 도메인(m-event)이 실제로 호출하는 건
 // /api/fidlocations 하나뿐이므로, CORS는 그 라우트에만 별도로 적용한다.
 app.use(express.json());
-
-// 응답 압축 (선택 의존성) — `npm install compression` 후 자동 활성화.
-// 미설치 상태여도 서버는 정상 기동한다.
-try {
-  app.use(require("compression")());
-} catch (e) {
-  console.warn("[안내] compression 미설치 — `npm install compression` 시 응답 전송량 절감 가능");
-}
+app.use(compression());
 
 app.use(express.static("public")); // 프론트(index.html 등) 정적 서빙
 
@@ -60,6 +61,11 @@ app.use(express.static("public")); // 프론트(index.html 등) 정적 서빙
 // UserDB 문서 ID = Firebase Auth UID (loginWithCredentials가
 // admin.auth().createCustomToken(matched.id, ...)로 문서ID를 그대로 uid로
 // 사용하기 때문) → where 쿼리 없이 doc(uid) 단건 조회로 매칭 가능.
+//
+// ⚠️ active 게이트 주의: loginWithCredentials 자체는 active를 검사하지 않는다
+//    (allowed_apps만 봄). 즉 **Dashboard 로그인만 active:true를 요구**하므로,
+//    나중에 "계정 활성"과 "관리자 권한"을 별도 필드로 분리할 때 이 조건도 같이
+//    바꿔야 한다. 안 바꾸면 Dashboard 로그인이 통째로 막힌다. (system_map.md 2번)
 // ---------------------------------------------------------------------------
 app.post("/api/login", async (req, res) => {
   try {
@@ -87,11 +93,13 @@ app.post("/api/login", async (req, res) => {
     // 필드 자체가 없으면(Array가 아니면) 전체 앱 허용 — Cloud Function의
     // isAppAllowed()와 동일한 하위호환 규칙.
     if (Array.isArray(userData.allowed_apps) && !userData.allowed_apps.includes("dashboard")) {
-      return res.status(403).json({ ok: false, message: "이 계정은 M-SMART 접근 권한이 없습니다." });
+      return res.status(403).json({ ok: false, message: "이 계정은 대시보드 접근 권한이 없습니다." });
     }
 
     const center = userData.center_name || "";
-    return res.json({ ok: true, center, token: signSession(center) });
+    // 세션 토큰엔 신원이 안 실리므로(센터만) 접속 이력은 여기서 남긴다.
+    console.log(`[로그인] uid=${uid} center=${center}`);
+    return res.json({ ok: true, center, token: signSession(center, uid) });
   } catch (err) {
     console.error("로그인 처리 오류:", err);
     return res.status(401).json({ ok: false, message: "인증 토큰이 유효하지 않습니다." });
@@ -131,10 +139,24 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
             .where("center_name", "==", center)
             .where("datetime", ">=", lookbackDate);
 
-      const [logsSnap, fidLocations, eventsByFid] = await Promise.all([
+      // [2026-07-27] 이벤트 조회 실패가 대시보드 전체를 500으로 만들지 않도록 격리.
+      // 실제로 events 복합 인덱스 누락 때 FAILED_PRECONDITION으로 점검기록까지 못 보게
+      // 된 이력이 있다(system_map.md 6번). 이벤트만 비우고 나머지는 그대로 보여주되,
+      // 조용히 "이벤트 0건"으로 보이면 안 되므로 eventsError로 프런트에 알린다.
+      // (M-Engine 월간 리포트의 센터별 오류 격리와 같은 교훈)
+      const safeBuildEvents = async () => {
+        try {
+          return { data: await buildEventsData(center), failed: false };
+        } catch (e) {
+          console.error("이벤트 조회 실패 — 점검기록만 반환합니다:", e);
+          return { data: {}, failed: true };
+        }
+      };
+
+      const [logsSnap, fidLocations, events] = await Promise.all([
         logsQuery.get(),
         getFidLocations(center),
-        buildEventsData(center),
+        safeBuildEvents(),
       ]);
 
       // 점검 기록 가공
@@ -153,11 +175,28 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
         });
       });
 
+      // 응답 크기 방어: 상한을 넘으면 최신 날짜부터 남긴다.
+      // (Firestore 읽기량 자체는 안 줄어든다 — config/constants.js 주석 참고)
+      let truncated = false;
+      let finalRecords = records;
+      if (records.length > INSPECTION_LOGS_MAX_RECORDS) {
+        truncated = true;
+        finalRecords = records
+          .slice()
+          .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
+          .slice(0, INSPECTION_LOGS_MAX_RECORDS);
+        console.warn(
+          `[경고] ${center}: 점검기록 ${records.length}건이 상한 ${INSPECTION_LOGS_MAX_RECORDS}건을 초과해 잘라냈습니다.`
+        );
+      }
+
       return {
         center,
-        records,
+        records: finalRecords,
+        truncated,
         fidLocations,
-        eventsByFid,
+        eventsByFid: events.data,
+        eventsError: events.failed,
         generatedAt: new Date().toISOString(),
       };
     });
@@ -170,11 +209,38 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/event-photos?id=XXX   [인증 필수]
+// [2026-07-27 신규] 이벤트 상세 팝업을 열 때만 사진 URL을 해석한다.
+// /api/dashboard가 모든 이벤트의 signed URL을 미리 발급하던 것을 대체 —
+// 서명은 IAM signBlob 왕복이라 팝업을 안 열어도 비용이 나가고 있었다.
+// 접근 제어: 비-Master는 자기 센터의 이벤트만. (lib/events.js getEventPhotos)
+// ---------------------------------------------------------------------------
+app.get("/api/event-photos", authMiddleware, async (req, res) => {
+  const id = (req.query.id || "").toString().trim();
+  if (!id) {
+    return res.status(400).json({ ok: false, message: "id 파라미터가 필요합니다." });
+  }
+
+  try {
+    const photos = await getEventPhotos(id, req.authCenter);
+    // 문서 없음 / 다른 센터 이벤트를 구분하지 않는다 (존재 여부 탐색 방지)
+    if (photos === null) {
+      return res.status(404).json({ ok: false, message: "이벤트를 찾을 수 없습니다." });
+    }
+    return res.json({ ok: true, photos });
+  } catch (err) {
+    console.error("이벤트 사진 조회 오류:", err);
+    return res.status(500).json({ ok: false, message: "사진 조회 중 오류가 발생했습니다." });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/excel-files?center=XXX&page=1&pageSize=15   [인증 필수]
 // [2026-07-23 변경] Maxerve_Excel(설비별 점검표) 대신 m-event가 생성하는
 // "이벤트 보고서"(Storage report/{center}/*.xlsx)를 대신 보여준다.
-// 이벤트 보고서는 설비 단위가 아니라 센터 전체 기간 단위 파일이라 fid 파라미터는 더 이상
-// 안 씀 — 프런트가 fid를 붙여 보내도 무시하고 항상 센터(또는 Master는 전체) 통합 목록을 반환.
+// 이벤트 보고서는 설비 단위가 아니라 센터 전체 기간 단위 파일이라 fid 개념 자체가
+// 없어졌다 — 2026-07-27에 남아 있던 fid 파라미터 배선(항상 null을 반환하던
+// 응답 필드 포함)을 전부 제거했다.
 // 5분 캐시(reportFiles:{center})로 Storage 목록 조회 + signed URL 발급 비용을 줄인다.
 // ---------------------------------------------------------------------------
 app.get("/api/excel-files", authMiddleware, async (req, res) => {
@@ -205,7 +271,6 @@ app.get("/api/excel-files", authMiddleware, async (req, res) => {
 
     return res.json({
       ok: true,
-      fid: null,
       page: safePage,
       pageSize,
       totalCount,
@@ -213,8 +278,8 @@ app.get("/api/excel-files", authMiddleware, async (req, res) => {
       items,
     });
   } catch (err) {
-    console.error("엑셀 파일 목록 조회 오류:", err);
-    return res.status(500).json({ ok: false, message: "엑셀 파일 목록 조회 중 오류가 발생했습니다." });
+    console.error("이벤트 보고서 목록 조회 오류:", err);
+    return res.status(500).json({ ok: false, message: "보고서 목록 조회 중 오류가 발생했습니다." });
   }
 });
 
@@ -240,10 +305,29 @@ app.post("/api/dashboard/refresh", authMiddleware, (req, res) => {
 // fid → fid_name 매핑 반환 (m-event 이벤트트래커에서 사용)
 // ★ 이벤트(M-Event) 프로젝트가 공유 사용 중 — 응답 형식과 무인증 접근을
 //   변경하지 말 것. (변경 시 이벤트 프로젝트도 함께 배포해야 함)
+//
+// [2026-07-27] 무인증인 만큼 center 값을 두 가지로 좁힌다:
+//   ① center=Master 거부 — Master는 lib/facilities.js에서 center_configs 전체를
+//      순회하는 분기라, 이대로 두면 **인증 없이 전 센터의 설비 매핑이 통째로**
+//      나온다(/api/centers를 Master 전용으로 막아둔 게 이 경로로 우회됐음).
+//      m-event는 항상 구체적인 센터명으로만 호출하므로 영향 없음.
+//   ② 등록되지 않은 센터 거부 — center 값이 캐시 키와 Firestore 쿼리에 그대로
+//      들어가므로, 임의 문자열로 캐시 항목과 읽기 비용을 무한히 유발할 수 있다.
+//      (검증 실패 시 fail-open — lib/centers.js isKnownCenter 주석 참고)
 app.get("/api/fidlocations", cors(), async (req, res) => {
   const center = (req.query.center || "").toString().trim();
   if (!center) return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
+
+  if (center === MASTER_CENTER_NAME) {
+    return res.status(400).json({ ok: false, message: "조회할 센터를 지정해주세요." });
+  }
+
   try {
+    if (!(await isKnownCenter(center))) {
+      console.warn(`[fidlocations] 등록되지 않은 센터 요청: ${center}`);
+      return res.status(404).json({ ok: false, message: "알 수 없는 센터입니다." });
+    }
+
     const [locations, sheetLabels] = await Promise.all([
       getFidLocations(center),
       getSheetLabels(center),
@@ -264,15 +348,8 @@ app.get("/api/centers", authMiddleware, async (req, res) => {
     return res.status(403).json({ ok: false, message: "권한이 없습니다." });
   }
 
-  const cacheKey = "centers:list";
-  const cached = getCache(cacheKey);
-  if (cached) return res.json({ ok: true, centers: cached });
-
   try {
-    const doc = await db.collection("settings").doc("all_centers").get();
-    const centers = doc.exists ? (doc.data().centers || []).slice().sort((a, b) => a.localeCompare(b)) : [];
-    setCache(cacheKey, centers);
-    return res.json({ ok: true, centers });
+    return res.json({ ok: true, centers: await getCenterList() });
   } catch (e) {
     console.error("센터 목록 조회 오류:", e);
     return res.status(500).json({ ok: false, message: "센터 목록 조회 중 오류가 발생했습니다." });

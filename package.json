@@ -1,13 +1,15 @@
 {
   "name": "facility-dashboard-cloudrun",
   "version": "1.0.0",
+  "private": true,
   "description": "시설물 점검 모니터링 대시보드 - Cloud Run API + 정적 프론트",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "compression": "^1.8.1",

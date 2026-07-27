@@ -1,0 +1,13 @@
+# `gcloud run deploy --source .`가 이 디렉터리를 통째로 업로드/COPY하므로
+# 런타임에 필요 없는 건 제외한다. (M-Engine도 같은 이유로 .dockerignore를 둠 —
+# 이미지가 커지면 Artifact Registry 저장 비용으로 직결된다)
+.git
+.gitignore
+.dockerignore
+node_modules
+npm-debug.log
+
+# 테스트/문서는 컨테이너 안에서 안 쓴다
+tests
+.github
+README.md

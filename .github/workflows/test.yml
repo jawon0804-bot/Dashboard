@@ -1,0 +1,21 @@
+# 순수 로직 회귀 테스트만 돌린다 (GCP 자격증명 불필요).
+# 배포는 여전히 `gcloud run deploy --source .` 수동 — 배포 CI는 WIF/시크릿 설정이
+# 선행되어야 해서 따로 논의 후 추가할 것.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm test
