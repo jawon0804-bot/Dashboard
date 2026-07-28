@@ -30,6 +30,7 @@ const { admin, db } = require("./lib/firebase");
 const {
   MASTER_CENTER_NAME,
   INSPECTION_LOGS_LOOKBACK_DAYS,
+  INSPECTION_LOGS_QUERY_LIMIT,
   INSPECTION_LOGS_MAX_RECORDS,
 } = require("./config/constants");
 const { cache, getCache, getOrBuild } = require("./lib/cache");
@@ -131,13 +132,17 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
       const lookbackDate = getLookbackDateString(INSPECTION_LOGS_LOOKBACK_DAYS);
 
       // inspection_logs: 최근 60일치만 조회 (datetime은 ISO 문자열이라 사전식 비교 = 시간순 비교와 동일)
-      // Master는 centerName 필터 없이 전체 센터를 60일 리밋만 걸어서 조회
-      const logsQuery = isMaster
+      // Master는 center_name 필터 없이 전체 센터를 60일 리밋만 걸어서 조회.
+      // [2026-07-27] orderBy(datetime desc) + limit 추가 — 예전엔 상한이 없어
+      // Master가 센터 수에 비례해 무한정 읽었다. 최신순이라 잘려도 최근 데이터는 온전.
+      // (필요 인덱스는 config/constants.js의 INSPECTION_LOGS_QUERY_LIMIT 주석 참고)
+      const baseQuery = isMaster
         ? db.collection("inspection_logs").where("datetime", ">=", lookbackDate)
         : db
             .collection("inspection_logs")
             .where("center_name", "==", center)
             .where("datetime", ">=", lookbackDate);
+      const logsQuery = baseQuery.orderBy("datetime", "desc").limit(INSPECTION_LOGS_QUERY_LIMIT);
 
       // [2026-07-27] 이벤트 조회 실패가 대시보드 전체를 500으로 만들지 않도록 격리.
       // 실제로 events 복합 인덱스 누락 때 FAILED_PRECONDITION으로 점검기록까지 못 보게
@@ -175,9 +180,15 @@ app.get("/api/dashboard", authMiddleware, async (req, res) => {
         });
       });
 
-      // 응답 크기 방어: 상한을 넘으면 최신 날짜부터 남긴다.
-      // (Firestore 읽기량 자체는 안 줄어든다 — config/constants.js 주석 참고)
-      let truncated = false;
+      // 쿼리 상한에 걸렸으면(= 가져온 문서 수가 정확히 limit) 더 오래된 기록이 남아 있다는 뜻
+      let truncated = logsSnap.size >= INSPECTION_LOGS_QUERY_LIMIT;
+      if (truncated) {
+        console.warn(
+          `[경고] ${center}: 점검기록이 쿼리 상한 ${INSPECTION_LOGS_QUERY_LIMIT}건에 도달했습니다(최신순으로 잘림).`
+        );
+      }
+
+      // 응답 크기 2차 방어: 문서 1건이 여러 레코드로 펼쳐지므로 여기서 한 번 더 자른다
       let finalRecords = records;
       if (records.length > INSPECTION_LOGS_MAX_RECORDS) {
         truncated = true;

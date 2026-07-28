@@ -7,13 +7,20 @@ module.exports = {
   // inspection_logs(점검기록)는 최근 60일치만 조회합니다. (엑셀 보고서는 전체 유지)
   INSPECTION_LOGS_LOOKBACK_DAYS: 60,
 
-  // 한 번의 /api/dashboard 응답에 담을 점검기록(레코드) 상한.
-  // Master는 전 센터 60일치를 필터 없이 읽으므로 센터 수에 비례해 응답이 무한정
-  // 커진다 — 상한을 넘으면 최신 것부터 잘라내고 응답에 truncated:true를 실어
-  // "조용히 일부만 보여주는" 상태가 되지 않게 한다.
-  // ⚠️ 이건 응답/메모리 방어일 뿐 Firestore 읽기량은 줄이지 않는다.
-  //    쿼리 단계에서 자르려면 orderBy(datetime desc)+limit이 필요하고
-  //    그건 inspection_logs 복합 인덱스가 선행되어야 한다 (README 참고).
+  // [2026-07-27] 쿼리 단계 상한(문서 수).
+  // Master는 전 센터 60일치를 읽으므로 센터 수에 비례해 읽기량이 무한정 커진다.
+  // orderBy(datetime desc) + limit으로 **Firestore 읽기 자체**를 자른다 —
+  // 최신 것부터 남으므로 잘려도 "최근 데이터"는 온전하다.
+  //   · 비-Master: center_name== + datetime>= + orderBy(datetime desc)
+  //     → 복합 인덱스 (center_name ASC, datetime DESC) 필요. **이미 READY**(CICAgJjmnIgK)
+  //   · Master: datetime>= + orderBy(datetime desc)
+  //     → 정렬/범위가 같은 단일 필드라 자동 생성되는 단일 필드 인덱스로 처리됨
+  // ⚠️ 이 쿼리 형태를 바꿀 땐 위 인덱스부터 확인할 것 (없으면 조용히 실패한다)
+  INSPECTION_LOGS_QUERY_LIMIT: 20000,
+
+  // 응답에 담을 레코드 상한(2차 방어).
+  // 문서 1건이 facility_id 배열만큼 레코드로 펼쳐지므로, 문서 수를 제한해도
+  // 레코드 수는 그보다 커질 수 있다. 넘치면 최신 날짜부터 남긴다.
   INSPECTION_LOGS_MAX_RECORDS: 50000,
 
   STORAGE_BUCKET_NAME: "m-smart-90148.firebasestorage.app",
