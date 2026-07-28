@@ -151,7 +151,7 @@ Dashboard/
 }
 ```
 - `records`: 최근 **60일치** `inspection_logs`만 포함 (오래된 데이터까지 한꺼번에 불러오면 느려지니까 제한을 둠)
-- `truncated`: 기록이 `INSPECTION_LOGS_MAX_RECORDS`(5만 건)를 넘어 잘라냈다는 뜻. 화면에 경고 배너가 뜸
+- `truncated`: 조회가 상한에 걸려 **최신 것만** 담았다는 뜻(화면에 경고 배너). 상한은 두 단계예요 — 쿼리 단계 `INSPECTION_LOGS_QUERY_LIMIT`(문서 2만 건, Firestore 읽기 자체를 자름) + 응답 단계 `INSPECTION_LOGS_MAX_RECORDS`(레코드 5만 건, 문서 1건이 `facility_id` 배열만큼 펼쳐지므로 2차 방어)
 - `fidLocations`: 설비ID → 위치명 매핑 (예: `기계_01` → `OHD1F_1A01`)
 - `eventsByFid`: 설비별 미해결(+최근 완료) 이벤트 목록 (m-event `events` 컬렉션 연동, 3번 뷰 하위 행에 표시)
   - `photos`: `events.photos` 필드에 URL이 있으면 그대로. 비어 있고 `photoCount > 0`이면 팝업을 열 때 `/api/event-photos`로 따로 받아옵니다
@@ -273,23 +273,26 @@ Firestore 외에 **Cloud Storage**도 직접 읽어요:
 
 ## ⚠️ Firestore 복합 인덱스 (배포 전 꼭 확인)
 
-일반 센터 조회는 아래처럼 동등 조건 + 범위 조건을 같이 써요:
+일반 센터 조회는 동등 조건 + 범위 조건 + 정렬을 같이 써요:
 ```js
 .where("center_name", "==", center).where("datetime", ">=", lookbackDate)
+.orderBy("datetime", "desc").limit(INSPECTION_LOGS_QUERY_LIMIT)
 ```
-이런 조합은 Firestore가 **복합 인덱스**를 요구해요. 미리 안 만들어두면 처음 조회할 때 에러가 나고, 에러 메시지에 색인 생성 링크가 자동으로 찍혀요 (그 링크 눌러도 1회성으로 생성 가능).
+이런 조합은 Firestore가 **복합 인덱스**를 요구해요. 미리 안 만들어두면 조회가 `FAILED_PRECONDITION`으로 실패해요.
 
-**미리 만들어두는 방법(권장):**
-```bash
-gcloud firestore indexes composite create \
-  --collection-group=inspection_logs \
-  --field-config field-path=center_name,order=ascending \
-  --field-config field-path=datetime,order=ascending \
-  --project=m-smart-90148
-```
-> ⚠️ 참고: 예전 설계 문서에는 필드명이 `centerName`으로 적혀 있었는데, 실제 코드는 `center_name`(스네이크케이스)을 쓰고 있어요. 인덱스를 만들 때 **반드시 실제 필드명인 `center_name`**으로 만들어야 해요. (Master 조회는 단일 조건이라 인덱스가 따로 필요 없어요.)
+**현재 상태 (2026-07-27 `gcloud firestore indexes composite list`로 실제 확인):**
 
-> 이건 인수인계 노트에서 말한 "Firestore 복합 인덱스 추가 필요" 항목과 같은 작업이에요.
+| 인덱스 | 상태 | 쓰임 |
+|---|---|---|
+| `inspection_logs (center_name ASC, datetime DESC)` | ✅ READY (`CICAgJjmnIgK`) | **지금 쓰는 쿼리** — 일반 센터 |
+| `inspection_logs (center_name ASC, datetime ASC)` | ✅ READY (`CICAgNiav4AK`) | 정렬 추가 전 쿼리 |
+| `inspection_logs (centerName ASC, datetime ASC/DESC)` | ⚠️ READY 2개 | **쓰는 코드 없음** (아래 참고) |
+
+Master 조회(`datetime >=` + `orderBy(datetime desc)`)는 범위와 정렬이 같은 단일 필드라 자동 생성되는 단일 필드 인덱스로 처리돼서 복합 인덱스가 필요 없어요.
+
+> ⚠️ **`centerName`(카멜케이스) 인덱스 2개는 쓰이지 않는 것으로 보여요.** 예전 설계 문서에 필드명이 `centerName`으로 적혀 있던 시절의 잔재로, 실제 코드는 전부 `center_name`(스네이크케이스)을 씁니다. `inspection_logs`는 M-SMART가 점검할 때마다 쓰는 최다 쓰기 컬렉션이고 인덱스는 쓰기마다 갱신 비용이 들어서 정리 대상이지만, **M-SMART·m-smart-monitor 저장소에서 `centerName` 사용 여부를 확인한 뒤** 지우세요. (`Maxerve_Excel`에도 같은 잔재가 있음 — `system_map.md` 참고)
+
+> 쿼리 형태를 바꿀 땐 **반드시 인덱스부터 확인**하세요. 이 저장소 계열에서 "인덱스가 없어서 기능이 조용히 실패한 채 방치"된 사고가 여러 번 있었어요.
 
 ---
 
@@ -327,10 +330,15 @@ gcloud run deploy facility-dashboard \
   --allow-unauthenticated \
   --min-instances=1 \
   --max-instances=3 \
-  --set-env-vars FIREBASE_PROJECT_ID=m-smart-90148
+  --set-env-vars FIREBASE_PROJECT_ID=m-smart-90148 \
+  --set-secrets SESSION_SECRET=dashboard-session-secret:latest
 ```
 - `--min-instances=1`: 인스턴스를 항상 1개 켜둬서 첫 접속이 느려지는 콜드스타트를 방지
 - `--max-instances=3`: 너무 많이 늘어나서 캐시가 여기저기 흩어지는 걸 방지
+- `SESSION_SECRET`: **반드시 설정**. 없으면 인스턴스마다 임시 난수 키로 떠서, 인스턴스가 2개 이상일 때 A에서 받은 토큰을 B가 거부해 로그인이 산발적으로 풀립니다. 평문 env var 대신 Secret Manager(`--set-secrets`)를 쓰세요
+  - 이미 설정돼 있으므로 재배포 시엔 `gcloud run deploy --source .`만 해도 유지됩니다 (기존 설정 보존)
+
+> ⚠️ `--source .` 배포는 리비전을 2개 만듭니다(빌드 이미지 → 베이스 이미지 고정). 트래픽은 **나중 것**이 받으니, 배포 후 확인할 땐 `gcloud run services describe`의 `status.traffic`을 보세요.
 
 ### 권한 확인
 Cloud Run 서비스 계정에 Firestore 읽기 권한(`roles/datastore.user`)이 있어야 해요.
@@ -401,6 +409,16 @@ gcloud projects add-iam-policy-binding m-smart-90148 \
 - 이 규칙은 **m-event에 두 벌 더 있어요**(`manager/js/events-tab.js`, `functions/lib/report-export.js`). 한쪽만 고치면 한쪽 화면에서만 사진이 깨져요 — `lib/photoNaming.js` 주석과 `system_map.md` 4번 체크리스트 참고
 - `photo_count`는 `"3장"`(문자열)과 `3`(숫자)이 섞여 저장돼요. `Number()`로 파싱하면 문자열 쪽이 통째로 0장이 됩니다 (실제로 그랬던 버그 — `tests/photoNaming.test.js`로 고정해둠)
 
+### 로컬에서 이벤트 보고서 목록이 500이 나요 (프로덕션은 멀쩡한데)
+로컬 개발 환경 전용 문제이고 코드 버그가 아니에요. 두 단계로 막힙니다:
+
+1. **`The requested project was not found.`** — ADC(`application_default_credentials.json`)의 `quota_project_id`가 엉뚱한(또는 삭제된) 프로젝트를 가리키면 버킷 목록 조회(`getFiles`)가 실패해요. 개별 객체 조회(`exists`)는 프로젝트를 안 타서 성공하기 때문에 헷갈립니다.
+   ```bash
+   gcloud auth application-default set-quota-project m-smart-90148
+   ```
+   (임시로는 `GOOGLE_CLOUD_QUOTA_PROJECT=m-smart-90148` 환경변수로도 됩니다)
+2. **`Cannot sign data without 'client_email'.`** — signed URL 서명은 서비스 계정이 있어야 해요. 개인 계정 ADC로는 원리상 불가능하고, Cloud Run에서는 런타임 서비스 계정이 IAM `signBlob`으로 처리합니다. **로컬에서 다운로드 링크까지 확인하려면** 서비스 계정 키를 `GOOGLE_APPLICATION_CREDENTIALS`로 지정해야 해요.
+
 ### Cloud Run 인스턴스가 여러 개 떠서 캐시가 안 맞는 것 같아요
 - 캐시는 인스턴스 메모리 안에만 있어서 인스턴스마다 따로 놂 — 이건 알려진 한계임
 - `--max-instances=3`으로 제한해뒀지만, 트래픽이 늘면 그래도 분산될 수 있음
@@ -460,10 +478,11 @@ gcloud projects add-iam-policy-binding m-smart-90148 \
 - 2026-07-23 전환 때 남은 `fid` 파라미터 배선 제거(서버 응답의 `fid: null`, 그려진 적 없는 설비ID 배지 포함)
 - `/api/login` 403 메시지가 "M-SMART 접근 권한"이라고 나오던 것 수정, 로그인 성공 시 `uid`/센터 로그 기록, 세션 토큰에 `uid` 포함(구버전 토큰 호환)
 
-> 📌 **미조치로 남긴 것**: `/api/dashboard`의 Firestore **읽기량** 자체는 그대로다.
-> 쿼리 단계에서 자르려면 `orderBy(datetime desc) + limit`이 필요하고, 그건
-> `inspection_logs` 복합 인덱스가 선행돼야 한다 — 인덱스 없이 배포하면 조용히 실패하는
-> 유형이라 일부러 손대지 않았다. 응답 크기 방어(`truncated`)만 넣어둔 상태.
+### [2026-07-27, 이어서] 미결 3건 처리
+
+- **`SESSION_SECRET` 설정 (실사용 전 필수였던 것)** — Cloud Run에 아예 설정돼 있지 않아, 인스턴스마다 임시 난수 키로 뜨고 있었다. `--max-instances=3`이라 인스턴스가 2개 이상 뜨면 **서명 키가 서로 달라 로그인이 산발적으로 풀리는** 상태였다. Secret Manager에 `dashboard-session-secret`으로 등록(평문 env var가 아니라 `secretKeyRef` — M-Engine의 Gmail 앱 비밀번호와 같은 방식) + 런타임 서비스 계정에 `secretAccessor` 부여 후 연결. 기동 로그에서 경고가 사라진 것으로 실제 적용 확인
+- **`/api/dashboard` 쿼리 단계 상한** — `orderBy(datetime desc) + limit(2만)` 추가로 Firestore **읽기량 자체**를 제한. 필요한 인덱스 `(center_name ASC, datetime DESC)`가 이미 READY라 새로 만들 필요가 없었다(배포 전 확인). 실제 데이터로 검증: 일반 센터 244건 / Master 245건, `records[0]`이 최신
+- **`firebase-admin` 업그레이드는 하지 않기로 함** — 남은 취약점 8건이 전부 `uuid` 단일 권고("v3/v5/v6에서 `buf` 인자를 줄 때 경계 검사 누락")에서 파생된 것이고, **13.10.0으로 올려도 14.2.0으로 올려도 똑같이 `uuid@9.0.1`을 끌어와서 해소되지 않는다**(별도 폴더에서 실제 설치해 확인). npm이 제안하는 "수정"은 `firebase-admin@10.3.0` 다운그레이드라 채택 불가. 우리 코드는 `uuid`를 직접 쓰지 않고(0건) Google 전송 계층 내부에서만 쓰이며 `buf` 인자를 넘기는 경로가 없어 실질 위험이 없다고 판단. `overrides`로 강제 교체하는 건 Firestore/Storage 클라이언트를 깨뜨릴 위험이 더 커서 하지 않음. **상류(Google 클라이언트 라이브러리)가 uuid를 올릴 때까지 대기**
 
 ### [2026-07-23] 3번 뷰 "보고서" 팝업을 설비별 점검표 → 센터 전체 이벤트 보고서로 교체
 대시보드의 대상이 내부 관리자에서 **관리주체**로 바뀌면서, m-event가 새로 만든 "이벤트 보고서" 기능(Storage `report/{center}/*.xlsx`)을 이 대시보드에서도 볼 수 있게 통합했다.
