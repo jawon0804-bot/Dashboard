@@ -286,11 +286,12 @@ Firestore 외에 **Cloud Storage**도 직접 읽어요:
 |---|---|---|
 | `inspection_logs (center_name ASC, datetime DESC)` | ✅ READY (`CICAgJjmnIgK`) | **지금 쓰는 쿼리** — 일반 센터 |
 | `inspection_logs (center_name ASC, datetime ASC)` | ✅ READY (`CICAgNiav4AK`) | 정렬 추가 전 쿼리 |
-| `inspection_logs (centerName ASC, datetime ASC/DESC)` | ⚠️ READY 2개 | **쓰는 코드 없음** (아래 참고) |
 
 Master 조회(`datetime >=` + `orderBy(datetime desc)`)는 범위와 정렬이 같은 단일 필드라 자동 생성되는 단일 필드 인덱스로 처리돼서 복합 인덱스가 필요 없어요.
 
-> ⚠️ **`centerName`(카멜케이스) 인덱스 2개는 쓰이지 않는 것으로 보여요.** 예전 설계 문서에 필드명이 `centerName`으로 적혀 있던 시절의 잔재로, 실제 코드는 전부 `center_name`(스네이크케이스)을 씁니다. `inspection_logs`는 M-SMART가 점검할 때마다 쓰는 최다 쓰기 컬렉션이고 인덱스는 쓰기마다 갱신 비용이 들어서 정리 대상이지만, **M-SMART·m-smart-monitor 저장소에서 `centerName` 사용 여부를 확인한 뒤** 지우세요. (`Maxerve_Excel`에도 같은 잔재가 있음 — `system_map.md` 참고)
+> ✅ **[2026-07-27] `centerName`(카멜케이스) 죽은 인덱스 3개를 삭제했어요.** 예전 설계 문서에 필드명이 `centerName`으로 적혀 있던 시절의 잔재로, `inspection_logs`에 2개(`CICAgJiUsZIK`/`CICAgNi4-ZIK`) + `Maxerve_Excel`에 1개(`CICAgJj7z4EJ`)가 남아 있었습니다.
+> **5개 저장소(M-SMART·m-event·M-Engine·Dashboard·m-smart-monitor) 전체를 clone해서 확인한 결과 `centerName`을 쓰는 소스코드가 0건**이었고(문서에만 등장), 데이터를 쓰는 M-SMART `public/js/submit.js`도 `center_name`으로 저장합니다. 인덱스는 문서를 쓸 때마다 갱신 비용이 드는데 `inspection_logs`는 점검할 때마다 쌓이는 최다 쓰기 컬렉션이라 정리 효과가 큽니다.
+> 삭제 후 실제 데이터로 재검증 완료 — 복합 인덱스 13개 → 10개, `FAILED_PRECONDITION` 0건.
 
 > 쿼리 형태를 바꿀 땐 **반드시 인덱스부터 확인**하세요. 이 저장소 계열에서 "인덱스가 없어서 기능이 조용히 실패한 채 방치"된 사고가 여러 번 있었어요.
 
