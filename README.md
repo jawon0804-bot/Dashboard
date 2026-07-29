@@ -96,12 +96,13 @@ Dashboard/
 | `/api/dashboard` | GET | 센터별 점검 기록 + 설비 위치명 + 이벤트 한 번에 조회 |
 | `/api/event-photos` | GET | 이벤트 1건의 사진 URL (상세 팝업을 열 때만 호출) |
 | `/api/excel-files` | GET | 센터의 이벤트 보고서(Storage `report/{center}/*.xlsx`) 목록을 페이지 단위로 조회 |
-| `/api/fidlocations` | GET | 설비ID → 위치명/시트라벨 매핑 (m-event가 이걸 가져다 씀 — **유일한 무인증 API**) |
+| `/api/fidlocations` | GET | 설비ID → 위치명/시트라벨 매핑 |
 | `/api/centers` | GET | 센터 목록 (**Master 전용**) |
 | `/api/dashboard/refresh` | POST | 캐시 강제 초기화 (관리/디버깅용) |
 | `/healthz` | GET | 서버 살아있는지 확인용 |
 
-`/api/fidlocations`와 `/healthz`를 뺀 나머지는 전부 `Authorization: Bearer <세션토큰>` 헤더가 필요해요.
+`/healthz`를 뺀 나머지는 전부 `Authorization: Bearer <세션토큰>` 헤더가 필요해요.
+(2026-07-29부터 `/api/fidlocations`도 여기 포함 — 아래 4️⃣ 참고. 그 전까지는 이 API만 무인증이었어요.)
 
 ### 1️⃣ `POST /api/login`
 ```json
@@ -175,15 +176,36 @@ Dashboard/
 ```json
 { "ok": true, "fidLocations": {"기계_01": "OHD1F_1A01"}, "sheetLabels": {"기계_01": "승강기 점검일지"} }
 ```
-> 🔗 **이 엔드포인트는 m-event(이벤트 트래커)가 가져다 써요.** m-event 화면이 설비ID를 사람이 읽기 좋은 이름으로 바꿔서 보여줄 때 이 API를 호출해요. Dashboard와 m-event가 서로 연결되어 있다는 걸 보여주는 부분이에요.
-> 그래서 **무인증**이고, 응답 형식(`{ok, fidLocations, sheetLabels}`)을 바꾸면 m-event가 조용히 깨져요.
 
-무인증인 만큼 `center` 값을 두 가지로 좁혀뒀어요 (둘 다 2026-07-27 추가):
+> 🔄 **[2026-07-29] 무인증 → 인증 필수로 바꿨어요. 이 저장소에서 가장 오래 잘못 적혀 있던 항목이에요.**
+>
+> 예전 문서엔 "m-event가 가져다 쓰는 유일한 무인증 API라 절대 바꾸지 말 것"이라고 적혀 있었어요.
+> 그런데 **m-event는 2026-07-11에 이 API를 안 쓰게 됐어요.** `firestore.rules`가 이미
+> `center_configs/{center}/**`를 본인 센터에 한해 읽도록 허용하고 있어서, m-event가
+> Firestore를 직접 읽는 방식으로 바꿨거든요(`m-event/manager/js/auth.js`의 `loadFidLocations`).
+> 그 커밋 주석엔 "의존 해소"라고 적혀 있었는데, **정작 이 README·`server.js` 주석·m-event README·
+> `system_map.md` 어디에도 반영되지 않아서** 3주 가까이 "쓰이고 있다"고 믿긴 채로 남아 있었어요.
+>
+> 확인 방법 두 가지로 교차 검증했어요:
+> - 5개 저장소 전체 grep → 이 API 호출부 **0건**
+> - Cloud Run 액세스 로그 → `referer: m-smart-0804.web.app`(m-event) 트래픽이
+>   **2026-07-11 05:39을 마지막으로 완전히 끊김**. 그 이후 기록은 07-27/28 코드리뷰 때
+>   직접 날린 `curl` 검증뿐 (`center=Master`, `center=nonexistent-center-xyz` 등)
+>
+> 즉 **소비자가 없는데 센터별 설비 매핑을 인증 없이 내주는 창구만 열려 있던 상태**였어요.
+> 그래서 다른 조회 API와 똑같이 `authMiddleware` + `resolveCenter`를 붙였어요.
+> **응답 형식(`{ok, fidLocations, sheetLabels}`)은 그대로예요.**
+>
+> ↩️ 되돌리려면: `server.js`에서 `authMiddleware`를 `cors()`로 바꾸고 `center`를 `req.query`에서
+> 읽으면 예전 동작으로 정확히 복귀해요. (저장소 밖 소비자 — 예컨대 Apps Script — 가 나타나는
+> 경우를 대비한 탈출구예요. M-Engine `/order`가 실제로 그런 사례였어요)
 
-- **`center=Master`는 400으로 거부.** Master는 `center_configs` 전체를 순회하는 분기라, 그대로 두면 **인증 없이 전 센터의 설비 매핑이 통째로** 나갔어요 (Master 전용으로 막아둔 `/api/centers`가 이 경로로 우회됐던 셈). m-event는 항상 구체적인 센터명으로만 호출하므로 영향 없어요.
-- **`settings/all_centers.centers`에 없는 센터는 404.** `center` 값이 캐시 키와 Firestore 쿼리에 그대로 들어가서, 검증이 없으면 임의 문자열로 캐시 항목과 읽기 비용을 무한히 만들 수 있어요.
-  - 단 **목록 조회 자체가 실패하거나 목록이 비어 있으면 통과**시켜요(fail-open) — Firestore 일시 장애가 m-event의 설비명 표시까지 끌고 내려가면 안 되니까요.
-  - ⚠️ 뒤집어 말하면 **새 센터를 `settings/all_centers.centers`에 등록 안 하면** m-event에서 그 센터 설비명이 ID로만 보여요.
+아래 두 검증은 무인증 시절(2026-07-27)에 넣은 방어예요. 지금은 인증 + `resolveCenter`가 같은 위협을 이미 막지만, 다중 방어로 남겨뒀어요:
+
+- **`center=Master`는 400으로 거부.** Master는 `center_configs` 전체를 순회하는 분기라, 무인증 시절엔 이 경로로 전 센터 매핑이 통째로 나갔어요 (Master 전용인 `/api/centers`가 우회됐던 셈).
+- **`settings/all_centers.centers`에 없는 센터는 404.** `center` 값이 캐시 키와 Firestore 쿼리에 그대로 들어가서, 검증이 없으면 임의 문자열로 캐시 항목과 읽기 비용을 무한히 만들 수 있었어요.
+  - 단 **목록 조회 자체가 실패하거나 목록이 비어 있으면 통과**시켜요(fail-open).
+  - 비-Master는 `resolveCenter`가 `center` 파라미터를 무시하고 자기 센터로 강제하므로, 이제 임의 문자열 자체가 들어올 수 없어요.
 
 ### 5️⃣ `GET /api/centers` (Master 전용)
 ```json
@@ -197,7 +219,7 @@ Master 계정의 센터 드롭다운용. Master가 아니면 403.
 
 - 일반 사용자: 로그인하면 자기 소속 센터(`center`)의 데이터만 보여요.
 - `center: "Master"`인 사용자: **모든 센터**의 데이터를 통합해서 봐요. (`/api/dashboard`, `/api/excel-files`가 Master를 특별 취급해서 센터 필터 없이 전체 조회하도록 분기돼요)
-  - ⚠️ **무인증인 `/api/fidlocations`는 예외** — 여기선 `center=Master`를 거부해요. 로그인 없이 전 센터 데이터가 나가면 안 되니까요. (2026-07-27 수정, 위 4️⃣ 참고)
+  - ⚠️ **`/api/fidlocations`는 예외** — 여기선 `center=Master`를 거부하고 구체적인 센터명을 요구해요. (위 4️⃣ 참고)
 - 비-Master 계정이 `?center=` 파라미터를 조작해도 서버(`lib/session.js`의 `resolveCenter`)가 자기 센터로 강제로 되돌려요.
 
 > 🧸 비유: 일반 선생님은 자기 반 출석부만 보고, 교장 선생님(Master)은 전교생 출석부를 한 번에 보는 것과 같아요.
@@ -217,7 +239,7 @@ Master 계정의 센터 드롭다운용. Master가 아니면 403.
 | 실패 시 | 조회가 실패하면 **아무것도 캐시하지 않음** — 다음 요청이 자연스럽게 재시도 |
 | 효과 | 같은 센터에서 5분 안에 여러 번 새로고침해도 Firestore 실제 읽기는 한 번만 발생 |
 
-> ⚠️ **항목 수 상한이 왜 필요했나**: 만료된 캐시 항목은 "같은 키를 다시 읽을 때"만 지워져요. 그런데 캐시 키에 `center` 값이 그대로 들어가고 `/api/fidlocations`는 무인증이라, 상한이 없으면 임의의 센터 문자열로 항목을 무한히 쌓아 인스턴스 메모리를 고갈시킬 수 있었어요. (2026-07-27 추가)
+> ⚠️ **항목 수 상한이 왜 필요했나**: 만료된 캐시 항목은 "같은 키를 다시 읽을 때"만 지워져요. 그런데 캐시 키에 `center` 값이 그대로 들어가고 당시 `/api/fidlocations`는 무인증이라, 상한이 없으면 임의의 센터 문자열로 항목을 무한히 쌓아 인스턴스 메모리를 고갈시킬 수 있었어요. (2026-07-27 추가 / 2026-07-29에 그 API도 인증 필수가 되면서 유입 경로 자체는 사라졌지만, 상한은 안전장치로 유지)
 
 > 🧸 비유: 식당에서 같은 메뉴를 자꾸 물어보면, 직원이 매번 주방까지 가서 확인하지 않고 "방금 확인했는데 짜장면 있어요!"라고 5분 동안은 외워서 바로 대답해주는 것과 같아요.
 

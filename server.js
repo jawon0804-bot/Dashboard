@@ -6,7 +6,8 @@
 //
 // [2026-07 보안/안정성 패치]
 //  1. HMAC 서명 세션 토큰 도입: /api/dashboard, /api/excel-files, /api/centers,
-//     /api/event-photos, /api/dashboard/refresh 는 로그인 후 발급된 토큰이 있어야 접근 가능
+//     /api/event-photos, /api/dashboard/refresh, /api/fidlocations 는 로그인 후
+//     발급된 토큰이 있어야 접근 가능 (fidlocations는 2026-07-29에 합류)
 //  2. 비-Master 계정은 자기 센터 데이터만 조회 가능 (center 파라미터 위조 차단)
 //  3. 캐시 스탬피드 방지 (동시 요청 시 Firestore 조회 1회로 합침)
 //  4. 조회 실패 시 빈 결과를 캐시하지 않음 (다음 요청이 재시도)
@@ -15,15 +16,16 @@
 //     loginWithCredentials Cloud Function이 담당한다 — /api/login은 그 함수가
 //     발급한 idToken을 검증만 하므로 여기서 대입 공격이 성립하지 않는다.
 //
-// ★ 주의: /api/fidlocations 는 이벤트(M-Event) 프로젝트가 공유 사용 중이므로
-//   응답 형식({ok, fidLocations, sheetLabels})과 무인증 접근을 그대로 유지한다.
+// ★ [2026-07-29 정정] "/api/fidlocations 는 M-Event가 공유 사용 중이므로 무인증을
+//   유지한다"고 적혀 있던 주의사항은 더 이상 사실이 아니다 — m-event는 07-11에
+//   Firestore 직접 조회로 전환했고 호출부가 남아 있지 않다(해당 라우트 주석 참고).
+//   지금은 다른 API와 동일하게 인증이 필요하다. 응답 형식은 그대로 유지.
 //
 // [2026-07-11] server.js가 너무 비대해져서(약 800줄) config/와 lib/로 로직을
 // 분리했다. 이 파일은 익스프레스 설정 + 라우트 정의만 담당한다.
 // (m-smart-monitor의 functions/config, functions/lib 구조를 참고함)
 
 const express = require("express");
-const cors = require("cors");
 const compression = require("compression");
 
 const { admin, db } = require("./lib/firebase");
@@ -43,9 +45,10 @@ const { getCenterList, isKnownCenter } = require("./lib/centers");
 
 const app = express();
 // [2026-07-11 수정] cors()를 전역 적용하지 않음. 이 서버의 프론트엔드(public/index.html)는
-// express.static("public")로 같은 서버·같은 오리진에서 서빙되므로 인증 필요 API는
-// CORS가 아예 필요 없음(same-origin). 다른 도메인(m-event)이 실제로 호출하는 건
-// /api/fidlocations 하나뿐이므로, CORS는 그 라우트에만 별도로 적용한다.
+// express.static("public")로 같은 서버·같은 오리진에서 서빙되므로 CORS가 아예 필요 없음.
+// [2026-07-29] 마지막까지 남아있던 크로스오리진 호출부(/api/fidlocations ← m-event)가
+// 실제로는 07-11에 사라진 것이 확인되어, 그 라우트의 cors()와 여기 require까지 제거했다.
+// 이제 이 서버는 CORS를 전혀 쓰지 않는다(package.json의 cors 의존성만 미사용으로 남음).
 app.use(express.json());
 app.use(compression());
 
@@ -313,20 +316,29 @@ app.post("/api/dashboard/refresh", authMiddleware, (req, res) => {
 });
 
 // ── /api/fidlocations ──────────────────────────────────────────
-// fid → fid_name 매핑 반환 (m-event 이벤트트래커에서 사용)
-// ★ 이벤트(M-Event) 프로젝트가 공유 사용 중 — 응답 형식과 무인증 접근을
-//   변경하지 말 것. (변경 시 이벤트 프로젝트도 함께 배포해야 함)
+// fid → fid_name / sheet_label 매핑 반환.
 //
-// [2026-07-27] 무인증인 만큼 center 값을 두 가지로 좁힌다:
-//   ① center=Master 거부 — Master는 lib/facilities.js에서 center_configs 전체를
-//      순회하는 분기라, 이대로 두면 **인증 없이 전 센터의 설비 매핑이 통째로**
-//      나온다(/api/centers를 Master 전용으로 막아둔 게 이 경로로 우회됐음).
-//      m-event는 항상 구체적인 센터명으로만 호출하므로 영향 없음.
-//   ② 등록되지 않은 센터 거부 — center 값이 캐시 키와 Firestore 쿼리에 그대로
-//      들어가므로, 임의 문자열로 캐시 항목과 읽기 비용을 무한히 유발할 수 있다.
-//      (검증 실패 시 fail-open — lib/centers.js isKnownCenter 주석 참고)
-app.get("/api/fidlocations", cors(), async (req, res) => {
-  const center = (req.query.center || "").toString().trim();
+// [2026-07-29 변경 — 무인증 해제] 이 엔드포인트는 "m-event가 공유해서 쓰니까
+// 무인증·CORS 개방을 유지해야 한다"는 전제로 열려 있었다. 그 전제는 이미 깨져
+// 있었다: m-event는 2026-07-11에 Firestore(center_configs)를 직접 읽는 방식으로
+// 전환했고(m-event/manager/js/auth.js의 loadFidLocations), 그 뒤로 이 API를
+// 호출하지 않는다. 5개 저장소 전체 grep 결과 호출부 0건이고, Cloud Run 액세스
+// 로그에서도 referer=m-smart-0804.web.app 트래픽이 2026-07-11 05:39 이후 완전히
+// 끊겼다(그 뒤 기록은 07-27/28 코드리뷰 때 수동으로 날린 curl 검증뿐).
+//
+// 즉 "센터별 설비ID→위치명 매핑 전체"를 인증 없이 내주는 창구가 실제 소비자
+// 없이 열려만 있던 상태였다. 그래서:
+//   · authMiddleware 적용 — 다른 조회 API와 동일하게 세션 토큰을 요구
+//   · resolveCenter 사용 — 비-Master는 center 파라미터를 위조해도 자기 센터로 강제
+//   · cors() 제거 — 남은 호출부가 same-origin(이 서버의 index.html)뿐이라 불필요
+//
+// 아래 두 검증(① Master 거부 ② 미등록 센터 거부)은 무인증 시절의 방어였고, 지금은
+// 인증+resolveCenter가 같은 위협을 이미 막지만 다중 방어로 그대로 둔다.
+// ⚠️ 되돌릴 일이 생기면(저장소 밖 소비자 — 예: Apps Script — 가 나타나는 경우)
+//    authMiddleware를 cors()로 되돌리고 center를 req.query에서 읽으면 예전 동작으로
+//    정확히 복귀한다. 응답 형식({ok, fidLocations, sheetLabels})은 바꾸지 않았다.
+app.get("/api/fidlocations", authMiddleware, async (req, res) => {
+  const center = resolveCenter(req);
   if (!center) return res.status(400).json({ ok: false, message: "center 파라미터가 필요합니다." });
 
   if (center === MASTER_CENTER_NAME) {
