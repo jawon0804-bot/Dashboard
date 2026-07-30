@@ -379,7 +379,17 @@ app.get("/api/centers", authMiddleware, async (req, res) => {
   }
 });
 
-app.get("/healthz", (req, res) => res.send("ok"));
+// 가동 확인용. 인증 없이 200 + "ok"만 돌려준다(내부 정보 노출 없음).
+//
+// ⚠️ 경로 이름을 `/healthz`로 되돌리지 말 것 — 그러면 다시 죽는다.
+// 2026-07-11부터 3주간 "라우트는 있는데 라이브에선 404"인 상태였고, 2026-07-30에
+// 원인을 찾았다: `healthz`/`statusz`/`varz`는 구글이 내부 진단 페이지(z-page)로
+// 선점한 이름이라, **Google Frontend가 가로채 자기 404를 돌려주고 요청이 컨테이너에
+// 도달조차 하지 않는다.** 로컬에선 200이라 더 헷갈렸다.
+// 실측: /healthz·/statusz·/varz → 구글 404(1568B, x-powered-by 없음)
+//       /health·/healthcheck·/readyz·/livez → Express까지 도달 (= 우리가 응답)
+// "z로 끝나서"가 아니다(readyz/livez는 통과). 저 세 이름만 피하면 된다.
+app.get("/health", (req, res) => res.send("ok"));
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {

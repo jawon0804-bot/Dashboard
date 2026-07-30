@@ -99,9 +99,14 @@ Dashboard/
 | `/api/fidlocations` | GET | 설비ID → 위치명/시트라벨 매핑 |
 | `/api/centers` | GET | 센터 목록 (**Master 전용**) |
 | `/api/dashboard/refresh` | POST | 캐시 강제 초기화 (관리/디버깅용) |
-| `/healthz` | GET | 서버 살아있는지 확인용 |
+| `/health` | GET | 서버 살아있는지 확인용 (200 + `ok`). **2026-07-30에 `/healthz`에서 이름 변경** — 아래 참고 |
 
-`/healthz`를 뺀 나머지는 전부 `Authorization: Bearer <세션토큰>` 헤더가 필요해요.
+> ⚠️ **`/healthz`로 되돌리지 마세요.** `healthz`·`statusz`·`varz`는 구글이 내부 진단 페이지로
+> 선점한 이름이라 **Google Frontend가 가로채고 요청이 우리 서버까지 오지 않아요.** 라우트가
+> 멀쩡한데도 라이브에서만 404가 나고(로컬은 200) 로그에도 안 찍혀서 3주 동안 원인을 못 찾았던
+> 항목이에요. `/health`·`/healthcheck`·`/readyz`·`/livez`는 정상적으로 도달합니다.
+
+`/health`를 뺀 나머지는 전부 `Authorization: Bearer <세션토큰>` 헤더가 필요해요.
 (2026-07-29부터 `/api/fidlocations`도 여기 포함 — 아래 4️⃣ 참고. 그 전까지는 이 API만 무인증이었어요.)
 
 ### 1️⃣ `POST /api/login`
