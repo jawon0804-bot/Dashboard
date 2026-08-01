@@ -42,6 +42,7 @@ const { getFidLocations, getSheetLabels } = require("./lib/facilities");
 const { buildEventsData, getEventPhotos } = require("./lib/events");
 const { listReportFileMeta, signReportFileUrl } = require("./lib/reportFiles");
 const { getCenterList, isKnownCenter } = require("./lib/centers");
+const { canAccessDashboard } = require("./lib/permissions");
 
 const app = express();
 // [2026-07-11 수정] cors()를 전역 적용하지 않음. 이 서버의 프론트엔드(public/index.html)는
@@ -66,10 +67,12 @@ app.use(express.static("public")); // 프론트(index.html 등) 정적 서빙
 // admin.auth().createCustomToken(matched.id, ...)로 문서ID를 그대로 uid로
 // 사용하기 때문) → where 쿼리 없이 doc(uid) 단건 조회로 매칭 가능.
 //
-// ⚠️ active 게이트 주의: loginWithCredentials 자체는 active를 검사하지 않는다
-//    (allowed_apps만 봄). 즉 **Dashboard 로그인만 active:true를 요구**하므로,
-//    나중에 "계정 활성"과 "관리자 권한"을 별도 필드로 분리할 때 이 조건도 같이
-//    바꿔야 한다. 안 바꾸면 Dashboard 로그인이 통째로 막힌다. (system_map.md 2번)
+// ✅ [2026-08-01] "계정 활성 / 관리자 권한" 분리 완료 — 아래 경고는 그 작업으로 해소됐다.
+//    예전엔 이 엔드포인트가 `active !== true → 401`로 막았고, 그게 m-event/M-SMART엔
+//    없는 Dashboard만의 조건이라 **active가 사실상 "관리자냐"의 뜻으로 쓰이고 있었다.**
+//    이제 판정은 lib/permissions.js의 canAccessDashboard()가 한다(관리자 = role:"admin",
+//    role이 아직 없는 문서는 예전 의미인 active로 폴백). 전환기 동안 결과는 예전과 동일하다.
+//    ⚠️ 그 폴백을 지우는 건 구글시트 백필이 UserDB 전 문서에 반영된 뒤에 할 것.
 // ---------------------------------------------------------------------------
 app.post("/api/login", async (req, res) => {
   try {
@@ -83,8 +86,8 @@ app.post("/api/login", async (req, res) => {
 
     const doc = await db.collection("UserDB").doc(uid).get();
 
-    // [유지] "미등록"과 "비활성 계정" 응답을 통일해 계정 존재 여부 노출 방지.
-    if (!doc.exists || doc.data().active !== true) {
+    // [유지] "미등록"과 "권한 없음" 응답을 통일해 계정 존재 여부 노출 방지.
+    if (!doc.exists || !canAccessDashboard(doc.data())) {
       return res.status(401).json({
         ok: false,
         message: "인증 실패: 정보가 일치하지 않거나 접근이 제한된 계정입니다. 관리자에게 문의하세요.",
