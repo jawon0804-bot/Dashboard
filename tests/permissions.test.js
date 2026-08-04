@@ -7,9 +7,10 @@
 // **Dashboard만 그걸 관리자 여부의 뜻으로 쓰고 있었다.** "메일을 받게 하려고 active를
 // 켜면 Dashboard까지 열리는" 부작용이 여기서 나왔다.
 //
-// role로 옮기면서 두 방향의 사고가 가능해졌고, 아래가 그 둘을 막는다:
-//   ① 백필 전에 배포되면 → 폴백이 없으면 **관리자 전원이 로그인 불가**  → [2]번 그룹
-//   ② 폴백을 너무 넓게 잡으면 → **현장 작업자 전원이 Dashboard에 로그인**  → [3]번 그룹
+// [2026-08-04] 백필·시트 스크립트 교체가 끝나 전환기 폴백(role 없으면 active로 판정)을
+// 제거했다. 이제 role이 "admin"이 아니면 Dashboard에 못 들어온다(fail-closed).
+//   ① 폴백이 되살아나면 → active:true 하나로 다시 열린다              → [2]번 그룹
+//   ② 판정이 너무 넓어지면 → **현장 작업자 전원이 Dashboard에 로그인**  → [3]번 그룹
 //
 // ⚠️ 이 파일의 규칙은 m-event/functions/lib/permissions.js, M-Engine/lib/permissions.py와
 //    **같은 규칙의 사본**이다. 셋 중 하나를 고치면 나머지도 같이 고칠 것.
@@ -27,11 +28,11 @@ test("[1] role이 있으면 role이 이긴다", () => {
   assert.strictEqual(isAdmin({ role: "admin", active: false }), true);
 });
 
-test("[2] 전환기 폴백 — role 없는 문서는 예전 의미(active)로 판정한다", () => {
-  // 이게 깨지면 시트 백필이 반영되기 전에 배포됐을 때 Dashboard 로그인이 통째로 막힌다.
-  assert.strictEqual(canAccessDashboard({ active: true, center_name: CENTER }), true);
+test("[2] fail-closed — role 없는 문서는 관리자가 아니다 (2026-08-04 폴백 제거)", () => {
+  // 여기가 깨지면(= 폴백 부활) active:true 하나로 Dashboard가 다시 열린다.
+  assert.strictEqual(canAccessDashboard({ active: true, center_name: CENTER }), false);
   assert.strictEqual(canAccessDashboard({ active: false, center_name: CENTER }), false);
-  assert.strictEqual(canAccessDashboard({ role: "", active: true }), true, "빈 문자열은 '없음'으로 보고 폴백");
+  assert.strictEqual(canAccessDashboard({ role: "", active: true }), false, "빈 문자열도 role 없음");
 });
 
 test("[3] 현장 작업자는 여전히 못 들어온다 (권한 상승 방지)", () => {
@@ -55,8 +56,8 @@ test("[5] Master는 데이터 범위이지 권한이 아니다", () => {
   // ⚠️ `|| isMaster`를 되살리면 "전 센터를 열람하되 관리는 안 하는 계정"이 표현 불가가 된다.
   assert.strictEqual(canAccessDashboard({ center_name: "Master", role: "user", active: true }), false);
   assert.strictEqual(canAccessDashboard({ center_name: "Master", role: "admin", active: true }), true);
-  // 전환기 — 현재 운영 중인 Master 계정 2명이 이 상태(role 없음 + active:true)다.
-  assert.strictEqual(canAccessDashboard({ center_name: "Master", active: true }), true);
+  // 폴백 제거 후 — Master라도 role:"admin"이 없으면 못 들어온다.
+  assert.strictEqual(canAccessDashboard({ center_name: "Master", active: true }), false);
 });
 
 test("[6] 잘못된 입력에 터지지 않는다", () => {
