@@ -62,13 +62,26 @@ test("resolveCenter: 비-Master는 center 파라미터를 무시하고 자기 �
   assert.strictEqual(resolveCenter(req), "우리센터");
 });
 
-test("resolveCenter: Master만 임의 센터 조회 가능, 미지정이면 Master(전체)", () => {
+test("resolveCenter: Master는 임의 센터 조회 가능, 미지정이면 빈 값(= 호출부에서 400)", () => {
   assert.strictEqual(
     resolveCenter({ authCenter: MASTER_CENTER_NAME, query: { center: "남의센터" } }),
     "남의센터"
   );
+  // [2026-08-04] 전 센터 합산 조회를 없앴다. 센터를 안 고르면 조회 자체를 시작하지 않는다.
+  // 여기가 다시 MASTER_CENTER_NAME을 돌려주면 센터 수에 비례해 읽는 경로가 되살아난다.
   assert.strictEqual(
     resolveCenter({ authCenter: MASTER_CENTER_NAME, query: {} }),
-    MASTER_CENTER_NAME
+    ""
+  );
+  // ?center=Master를 명시적으로 보내도 막는다 — 옛 북마크/주소창으로 무거운 경로가
+  // 되살아나면 화면만 고친 의미가 없다.
+  assert.strictEqual(
+    resolveCenter({ authCenter: MASTER_CENTER_NAME, query: { center: MASTER_CENTER_NAME } }),
+    ""
+  );
+  // 비-Master는 이 변경의 영향을 받지 않는다(자기 센터로 강제되는 경로 그대로).
+  assert.strictEqual(
+    resolveCenter({ authCenter: "우리센터", query: {} }),
+    "우리센터"
   );
 });

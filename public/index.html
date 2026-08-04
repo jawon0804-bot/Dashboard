@@ -355,7 +355,7 @@
             <div class="filter-group" id="centerFilterGroup" style="display:none;">
                 <label for="centerSelect">센터: </label>
                 <select id="centerSelect" class="filter-input" onchange="onCenterFilterChange()">
-                    <option value="Master">전체 센터</option>
+                    <option value="">센터를 선택하세요</option>
                 </select>
             </div>
 
@@ -411,6 +411,15 @@
         <div id="data-warning" style="display:none; background:var(--panel-2); border:1px solid var(--warn);
              border-left-width:4px; border-radius:8px; padding:10px 14px; margin-bottom:12px;
              font-size:13px; color:var(--text-main);"></div>
+
+        <!-- [2026-08-04] Master가 센터를 고르기 전에 보이는 안내. 전 센터 합산 조회를
+             없애면서, 로그인 직후에는 아무 데이터도 불러오지 않는다. -->
+        <div id="center-prompt" style="display:none; flex-direction:column; align-items:center;
+             justify-content:center; gap:10px; padding:80px 20px; color:var(--text-sub, #8996A5);">
+            <i class="fa-solid fa-building-circle-arrow-right" style="font-size:38px; opacity:.5;"></i>
+            <div style="font-size:16px; color:var(--text-main);">조회할 센터를 선택하세요</div>
+            <div style="font-size:13px;">상단 <b>센터</b> 드롭다운에서 센터를 고르면 현황이 표시됩니다.</div>
+        </div>
 
         <div class="dashboard-grid">
             <div class="chart-card">
@@ -667,7 +676,12 @@
                     const sel = document.getElementById('centerSelect');
                     const centers = result.centers || [];
                     // [수정] 센터명 이스케이프 적용
-                    sel.innerHTML = `<option value="${MASTER_CENTER_NAME}">전체 센터</option>` +
+                    // [2026-08-04] 첫 항목이 "전체 센터"(= 전 센터 합산 조회)였는데 없앴다.
+                    //   Master가 로그인만 해도 전 센터 60일치를 끌어오는 경로였고, 센터가
+                    //   늘수록 그것만 무거워졌다(50곳이면 약 42,000건 → 상한 20,000에서 잘림).
+                    //   전 센터 합산 화면은 실제로 안 쓰기로 해서 선택 자체를 없앴다.
+                    //   이제 센터를 고르기 전까지는 아무 조회도 나가지 않는다.
+                    sel.innerHTML = `<option value="">센터를 선택하세요</option>` +
                         centers.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
                 }
             } catch (e) {
@@ -677,10 +691,38 @@
 
         function onCenterFilterChange() {
             const sel = document.getElementById('centerSelect');
-            const chosen = sel ? sel.value : MASTER_CENTER_NAME;
-            const label = chosen === MASTER_CENTER_NAME ? "Master (전체 센터)" : chosen;
-            document.getElementById('dashboard-title').innerText = `[${label}] 시설물 점검 실시간 모니터링 현황판`;
+            const chosen = sel ? sel.value : "";
+            // 플레이스홀더("센터를 선택하세요")로 되돌린 경우 — 조회하지 않고 안내로 되돌아간다.
+            if (!chosen) {
+                showCenterPrompt();
+                return;
+            }
+            document.getElementById('dashboard-title').innerText = `[${chosen}] 시설물 점검 실시간 모니터링 현황판`;
             loadDashboardData(chosen);
+        }
+
+        // ─────────────────────────────────────────────────────────
+        // [2026-08-04] Master 전용 안내 상태
+        // 센터를 고르기 전에는 차트를 그리지 않는다. 예전에는 로그인 즉시 "전체 센터"가
+        // 선택돼 전 센터 데이터를 끌어왔는데, 센터가 늘수록 그 경로만 무거워졌다.
+        // ─────────────────────────────────────────────────────────
+        function showCenterPrompt() {
+            currentUserCenter = "";
+            allRecords = [];
+            const grid = document.querySelector('.dashboard-grid');
+            if (grid) grid.style.display = 'none';
+            const prompt = document.getElementById('center-prompt');
+            if (prompt) prompt.style.display = 'flex';
+            const loader = document.getElementById('global-loader');
+            if (loader) loader.style.display = 'none';
+            document.getElementById('dashboard-title').innerText = "시설물 점검 실시간 모니터링 현황판";
+        }
+
+        function hideCenterPrompt() {
+            const grid = document.querySelector('.dashboard-grid');
+            if (grid) grid.style.display = '';
+            const prompt = document.getElementById('center-prompt');
+            if (prompt) prompt.style.display = 'none';
         }
 
         function resetDateFilter() {
@@ -805,9 +847,19 @@
             // overrideCenter가 명시적으로 넘어오면(드롭다운 change) 그걸 최우선으로 쓴다.
             const queryCenter = overrideCenter
                 || (loginCenter === MASTER_CENTER_NAME
-                    ? (document.getElementById('centerSelect') ? document.getElementById('centerSelect').value : MASTER_CENTER_NAME)
+                    ? (document.getElementById('centerSelect') ? document.getElementById('centerSelect').value : "")
                     : loginCenter);
-            currentUserCenter = queryCenter || "";
+
+            // [2026-08-04] Master가 아직 센터를 안 골랐으면 조회하지 않는다.
+            //   여기서 막지 않으면 "현황 동기화" 버튼이나 자동 진입 경로가 center 없이
+            //   요청을 보내고, 서버는 400을 준다(resolveCenter가 빈 값을 돌려주므로).
+            //   화면엔 오류 대신 "센터를 선택하세요" 안내가 맞다.
+            if (!queryCenter || queryCenter === MASTER_CENTER_NAME) {
+                showCenterPrompt();
+                return;
+            }
+            hideCenterPrompt();
+            currentUserCenter = queryCenter;
 
             const reqId = ++dashboardRequestSeq;
             const loader = document.getElementById('global-loader');
