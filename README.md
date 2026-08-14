@@ -284,7 +284,7 @@ Master 계정의 센터 드롭다운용. Master가 아니면 403.
 |---|---|
 | `UserDB` | 로그인 인증 (`name`, `phone`, `active`, `center_name`) |
 | `inspection_logs` | 점검 기록 (최근 60일만 조회) |
-| `events` | m-event 이벤트(발생/조치중/완료) — 3번 뷰 하위 행에 표시 (`lib/events.js`) |
+| `events` | m-event 이벤트(발생/진행중/완료) — 3번 뷰 하위 행에 표시 (`lib/events.js`). ⚠️ 상태값은 m-event가 쓰고 여기선 읽기만 하는 공유 문자열이에요. 2026-08-14에 `조치중`→`진행중`으로 바뀌었고, 옛 이름이 남은 문서·이력도 있어서 `EVENT_OPEN_STATUSES`/`STATUS_ORDER`/색상·정렬이 **둘 다 받도록** 돼 있어요 |
 | `center_configs/{center}/facilities` | 설비ID → 위치명(`fid_name`) 매핑 |
 | `center_configs/{center}/inspections` | 설비ID → 점검표 이름(`sheet_label`) 매핑 |
 

@@ -36,7 +36,12 @@ module.exports = {
   MAX_CACHE_ENTRIES: 500,
 
   // 3번 뷰 이벤트 연동: 미해결 상태값 + 완료된 것도 같이 보여줄 기간(일)
-  EVENT_OPEN_STATUSES: ["발생", "조치중"],
+  //
+  // [2026-08-14] m-event가 "조치중" → "진행중"으로 이름을 바꿨다(events.status는 m-event가
+  // 쓰고 여기서는 읽기만 하는 공유 필드 — system_map.md 2번 표 참고). 전환 시점에 "조치중"
+  // 문서가 0건인 걸 확인했지만, **여기서 상태 이름 하나를 놓치면 그 이벤트는 미해결 목록에서
+  // 조용히 사라진다.** 옛 이름을 남겨두는 비용이 훨씬 싸므로 둘 다 미해결로 본다.
+  EVENT_OPEN_STATUSES: ["발생", "진행중", "조치중"],
   EVENT_RECENT_LOOKBACK_DAYS: 30,
 
   // 이벤트 사진 signed URL 유효기간
