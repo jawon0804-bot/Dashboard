@@ -44,6 +44,17 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
+        /* 이벤트 팝업 사진 — 이미지가 내려올 때까지 덮개(스피너)를 씌운다 (renderEventPhotos) */
+        .ev-photo { position: relative; display: block; }
+        .ev-photo-veil {
+            position: absolute; left: 0; top: 0; right: 0; aspect-ratio: 1;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 8px; background: var(--panel-2); color: var(--sub-dim); font-size: 13px;
+        }
+        .ev-photo:not(.is-loading):not(.is-error) .ev-photo-veil { display: none; }
+        .ev-photo.is-error .ev-photo-veil i { display: none; }
+        .ev-photo.is-error .ev-photo-veil::after { content: "불러올 수 없음"; font-size: 11px; }
+
         :root {
             --bg-dark: #0B0F14;
             --panel-2: #161D26;
@@ -1003,13 +1014,31 @@
             holder.innerHTML = `
                 <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:8px; margin:14px 0;">
                     ${cards.map(c => `
-                        <a href="${c.url}" target="_blank" rel="noopener">
+                        <a href="${c.url}" target="_blank" rel="noopener" class="ev-photo is-loading">
                             <img src="${c.url}" title="${c.done ? '완료 사진' : '점검 사진'}"
                                  style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px;
                                         border:${c.done ? '2px solid #22c55e' : '1px solid var(--border-color)'};">
+                            <span class="ev-photo-veil"><i class="fa-solid fa-spinner fa-spin"></i></span>
                             ${c.done ? `<div style="font-size:11px; color:var(--sub); text-align:center; margin-top:2px;">✅ 완료</div>` : ""}
                         </a>`).join("")}
                 </div>`;
+
+            // 이미지가 실제로 내려올 때까지 덮개(스피너)를 씌워둔다. URL을 아는 것과 사진이
+            // 보이는 건 다르다 — 여기서 안 가려주면 팝업을 열 때 빈 칸만 있다가 툭 나타난다
+            // (Storage 버킷이 US-CENTRAL1이라 장당 0.5초 이상). 칸은 aspect-ratio로 미리
+            // 잡혀 있어서 사진이 뜰 때 레이아웃이 밀리지도 않는다.
+            holder.querySelectorAll('.ev-photo.is-loading').forEach(a => {
+                const img = a.querySelector('img');
+                if (!img) return;
+                const settle = ok => {
+                    a.classList.remove('is-loading');
+                    if (!ok) a.classList.add('is-error');
+                };
+                // 캐시에 있으면 핸들러를 걸기 전에 이미 끝나 있다
+                if (img.complete) { settle(img.naturalWidth > 0); return; }
+                img.addEventListener('load',  () => settle(true),  { once: true });
+                img.addEventListener('error', () => settle(false), { once: true });
+            });
         }
 
         async function loadEventModalPhotos(ev) {
