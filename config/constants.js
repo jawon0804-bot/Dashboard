@@ -46,4 +46,8 @@ module.exports = {
 
   // 이벤트 사진 signed URL 유효기간
   EVENT_PHOTO_URL_TTL_MS: 60 * 60 * 1000, // 1시간
+
+  // 완료 사진 표시 상한. m-event 쪽 MAX_DONE_PHOTOS와 같은 값이어야 한다
+  // (그쪽 상한의 근거는 이벤트 보고서의 완료사진 열이 J·K 두 개라는 것).
+  MAX_COMPLETION_PHOTOS: 2,
 };

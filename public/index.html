@@ -989,16 +989,25 @@
         // ─────────────────────────────────────────────────────────
         let eventPhotoRequestSeq = 0;
 
-        function renderEventPhotos(urls) {
+        // [2026-08-15] 점검 사진과 완료 사진을 한 그리드에 같이 그린다.
+        // 완료 사진(m-event에서 관리자가 완료 처리하며 올린 증빙)은 초록 테두리로 구분한다 —
+        // 이 화면은 관리주체가 "이 건이 어떻게 마무리됐는지" 확인하는 자리라 그게 핵심 정보다.
+        function renderEventPhotos(urls, completionUrls) {
             const holder = document.getElementById('event-modal-photos');
             if (!holder) return;
-            const valid = (urls || []).map(safeUrl).filter(Boolean);
-            if (valid.length === 0) { holder.innerHTML = ""; return; }
+            const cards = [
+                ...(urls || []).map(safeUrl).filter(Boolean).map(url => ({ url, done: false })),
+                ...(completionUrls || []).map(safeUrl).filter(Boolean).map(url => ({ url, done: true })),
+            ];
+            if (cards.length === 0) { holder.innerHTML = ""; return; }
             holder.innerHTML = `
                 <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:8px; margin:14px 0;">
-                    ${valid.map(url => `
-                        <a href="${url}" target="_blank" rel="noopener">
-                            <img src="${url}" style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px; border:1px solid var(--border-color);">
+                    ${cards.map(c => `
+                        <a href="${c.url}" target="_blank" rel="noopener">
+                            <img src="${c.url}" title="${c.done ? '완료 사진' : '점검 사진'}"
+                                 style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:8px;
+                                        border:${c.done ? '2px solid #22c55e' : '1px solid var(--border-color)'};">
+                            ${c.done ? `<div style="font-size:11px; color:var(--sub); text-align:center; margin-top:2px;">✅ 완료</div>` : ""}
                         </a>`).join("")}
                 </div>`;
         }
@@ -1008,11 +1017,14 @@
             const holder = document.getElementById('event-modal-photos');
             if (!holder) return;
 
+            // 완료 사진은 값이 이미 다운로드 URL이라 폴백 경로가 없다 — 항상 바로 그린다.
+            const done = ev.completionPhotos || [];
+
             if (ev.photos && ev.photos.length > 0) {
-                renderEventPhotos(ev.photos);
+                renderEventPhotos(ev.photos, done);
                 return;
             }
-            if (!ev.photoCount) { holder.innerHTML = ""; return; }
+            if (!ev.photoCount) { renderEventPhotos([], done); return; }
 
             holder.innerHTML = `<div style="padding:14px 0; color:var(--sub-dim); font-size:13px;">
                 <i class="fa-solid fa-spinner fa-spin"></i> 사진 불러오는 중...</div>`;
@@ -1020,10 +1032,12 @@
             try {
                 const result = await apiFetch(`/api/event-photos?id=${encodeURIComponent(ev.id)}`);
                 if (reqId !== eventPhotoRequestSeq) return; // 그 사이 다른 이벤트를 열었음
-                renderEventPhotos(result.photos);
+                renderEventPhotos(result.photos, done);
             } catch (e) {
                 console.error("이벤트 사진 조회 오류:", e);
                 if (reqId !== eventPhotoRequestSeq) return;
+                // 점검 사진 조회에 실패해도 완료 사진은 보여준다(별도 경로라 영향 없음)
+                if (done.length > 0) { renderEventPhotos([], done); return; }
                 holder.innerHTML = `<div style="padding:14px 0; color:var(--sub-dim); font-size:13px;">사진을 불러오지 못했습니다.</div>`;
             }
         }
